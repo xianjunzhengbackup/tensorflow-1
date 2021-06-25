@@ -26,6 +26,7 @@ limitations under the License.
 
 #include "tensorflow/compiler/xla/literal.h"
 #include "tensorflow/compiler/xla/service/backend.h"
+#include "tensorflow/compiler/xla/service/executable.h"
 #include "tensorflow/compiler/xla/service/shaped_buffer.h"
 #include "tensorflow/compiler/xla/shape_util.h"
 #include "tensorflow/compiler/xla/statusor.h"
@@ -82,7 +83,8 @@ class XRTTupleAllocation : public core::RefCounted {
   static Status CreateAndTransfer(const xla::LiteralBase& literal,
                                   XRTMemoryManager* memory_manager,
                                   xla::Backend* backend, int device_ordinal,
-                                  XRTTupleAllocation** allocation);
+                                  XRTTupleAllocation** allocation,
+                                  se::DeviceMemoryAllocator* allocator);
 
   // Allocates new device memory buffers sufficient to store a tensor of
   // the specified shape, and returns a XRTTupleAllocation handle to the
@@ -90,12 +92,14 @@ class XRTTupleAllocation : public core::RefCounted {
   static Status CreateUninitialized(const xla::Shape& shape,
                                     XRTMemoryManager* memory_manager,
                                     xla::Backend* backend, int device_ordinal,
-                                    XRTTupleAllocation** allocation);
+                                    XRTTupleAllocation** allocation,
+                                    se::DeviceMemoryAllocator* allocator);
 
   // Wraps an existing ShapeBuffer in a new XRTTupleAllocation handle.
   static Status CreateFromBuffer(const xla::ShapedBuffer& shaped_buffer,
                                  xla::Backend* backend, int device_ordinal,
-                                 XRTTupleAllocation** allocation);
+                                 XRTTupleAllocation** allocation,
+                                 se::DeviceMemoryAllocator* allocator);
 
   // Same as the CreateFromBuffer() API above, but with the shapes being passed
   // as input. This API is used when creating tuple allocations with the output
@@ -105,7 +109,8 @@ class XRTTupleAllocation : public core::RefCounted {
                                  const xla::Shape& on_host_shape,
                                  const xla::Shape& on_device_shape,
                                  xla::Backend* backend, int device_ordinal,
-                                 XRTTupleAllocation** allocation);
+                                 XRTTupleAllocation** allocation,
+                                 se::DeviceMemoryAllocator* allocator);
 
   // Aliases a sub-shape of parent and returns a XRTTupleAllocation handle
   // to the sub-shape. If alias_base_allocation is true, the buffers in the
@@ -138,7 +143,8 @@ class XRTTupleAllocation : public core::RefCounted {
   static Status MakeTuple(XRTMemoryManager* memory_manager,
                           xla::Backend* backend, int device_ordinal,
                           const xla::ShapeTree<ExpandedTupleInput>& elements,
-                          XRTTupleAllocation** allocation);
+                          XRTTupleAllocation** allocation,
+                          se::DeviceMemoryAllocator* allocator);
 
   // Copies the allocation from device to host and returns it in literal.
   Status ToLiteral(xla::Backend* backend, xla::MutableLiteralBase* literal);
@@ -157,14 +163,16 @@ class XRTTupleAllocation : public core::RefCounted {
   // the internal literal, and transfer the literal value into the device
   // memory. Returns a boolean telling whether the allocation was swapped in.
   xla::StatusOr<bool> SwapIn(XRTMemoryManager* memory_manager,
-                             xla::Backend* backend);
+                             xla::Backend* backend,
+                             se::DeviceMemoryAllocator* allocator);
 
   // Pins the allocation first, then swap it in (if it is not already). After
   // this API returns, the allocation is pinned and its content on device
   // memory. The caller is responsible for releasing the pin-count using the
   // Unpin() API.
   xla::StatusOr<bool> PinAndSwapIn(XRTMemoryManager* memory_manager,
-                                   xla::Backend* backend);
+                                   xla::Backend* backend,
+                                   se::DeviceMemoryAllocator* allocator);
 
   // Checks whether the allocation is currently swapped out.
   bool IsSwapped() const;
@@ -214,7 +222,7 @@ class XRTTupleAllocation : public core::RefCounted {
                          const xla::ShapeIndex& source_index,
                          const xla::ShapeIndex& dest_index);
 
-  // Returns the device memory tree of this allocation. If the release_checker
+  // Returns the device memory tree of this allocation. If the alias_checker
   // function returns true for a given index, an owned device memory is returned
   // to the caller. But the tuple allocation cannot release the ownership in
   // full, as the execute operation might fail. So we rely on a call to
@@ -227,10 +235,9 @@ class XRTTupleAllocation : public core::RefCounted {
   // introduce a sharing concept (IOW shared_ptr model vs. unique_ptr).
   // We'd need something similar to XRTTupleAllocation instead of
   // ScopedShapedBuffer, which wants ownership and does not allow sharing.
-  xla::StatusOr<xla::ShapeTree<xla::MaybeOwningDeviceMemory>>
-  ToDeviceMemoryTree(
+  xla::StatusOr<xla::ExecutionInput> ToExecutionInput(
       const std::function<xla::StatusOr<bool>(const xla::ShapeIndex&)>&
-          release_checker);
+          alias_checker);
 
  private:
   // Creates a new handle with (tuple) shape.

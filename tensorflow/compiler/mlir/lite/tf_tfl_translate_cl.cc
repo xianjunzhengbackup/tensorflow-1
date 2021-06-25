@@ -22,6 +22,33 @@ using llvm::cl::opt;
 opt<std::string> input_file_name(llvm::cl::Positional,
                                  llvm::cl::desc("<input file>"),
                                  llvm::cl::init("-"));
+
+// NOLINTNEXTLINE
+opt<bool> import_saved_model_object_graph(
+    "savedmodel-objectgraph-to-mlir",
+    llvm::cl::desc("Import a saved model to its MLIR representation"),
+    llvm::cl::value_desc("dir"));
+
+// NOLINTNEXTLINE
+opt<bool> import_saved_model_signature_defs(
+    "savedmodel-signaturedefs-to-mlir",
+    llvm::cl::desc("Import a saved model V1 to its MLIR representation"),
+    llvm::cl::value_desc("dir"));
+
+// NOLINTNEXTLINE
+opt<std::string> saved_model_tags(
+    "tf-savedmodel-tags",
+    llvm::cl::desc("Tags used to indicate which MetaGraphDef to import, "
+                   "separated by ','"),
+    llvm::cl::init("serve"));
+
+// NOLINTNEXTLINE
+opt<std::string> saved_model_exported_names(
+    "tf-savedmodel-exported-names",
+    llvm::cl::desc("Names to export from SavedModel, separated by ','. Empty "
+                   "(the default) means export all."),
+    llvm::cl::init(""));
+
 // NOLINTNEXTLINE
 opt<std::string> output_file_name("o", llvm::cl::desc("<output file>"),
                                   llvm::cl::value_desc("filename"),
@@ -43,6 +70,12 @@ opt<bool> output_mlir(
     "output-mlir",
     llvm::cl::desc(
         "Output MLIR rather than FlatBuffer for the generated TFLite model"),
+    llvm::cl::init(false));
+// NOLINTNEXTLINE
+opt<bool> allow_all_select_tf_ops(
+    "allow-all-select-tf-ops",
+    llvm::cl::desc("Allow automatic pass through of TF ops (outside the flex "
+                   "allowlist) as select Tensorflow ops"),
     llvm::cl::init(false));
 
 // The following approach allows injecting opdefs in addition
@@ -78,8 +111,23 @@ opt<std::string> quant_stats_file_name("quant-stats",
                                        llvm::cl::init(""));
 
 // NOLINTNEXTLINE
-opt<bool> inline_functions(
-    "inline",
-    llvm::cl::desc("Inline function calls within the main function "
-                   "before legalization to TFLite."),
+opt<bool> convert_tf_while_to_tfl_while(
+    "convert_tf_while_to_tfl_while",
+    llvm::cl::desc("Whether to legalize TF While to TFL While."),
+    llvm::cl::init(true));
+
+// A list of comma separated TF operators which are created by the user.
+// This must be used with `-emit-select-tf-ops=true`.
+// NOLINTNEXTLINE
+opt<std::string> select_user_tf_ops(
+    "select-user-tf-ops",
+    llvm::cl::desc(
+        "<list of custom tf ops created by the user (comma separated)>"),
+    llvm::cl::init(""));
+
+// NOLINTNEXTLINE
+opt<bool> unfold_batchmatmul(
+    "unfold_batchmatmul",
+    llvm::cl::desc(
+        "Whether to unfold TF BatchMatMul to a set of TFL FullyConnected ops."),
     llvm::cl::init(true));

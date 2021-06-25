@@ -1,8 +1,8 @@
+load("@tf_toolchains//toolchains/remote_config:containers.bzl", "container_digests")
+
 licenses(["restricted"])
 
 package(default_visibility = ["//visibility:public"])
-
-load("//third_party/toolchains/preconfig/generate:containers.bzl", "container_digests")
 
 # Remote build platforms.
 # Each of the platform rules here provide a platform definition that is bound to a docker image.
@@ -70,45 +70,6 @@ platform(
     ],
     exec_properties = {
         "container-image": "docker://gcr.io/tensorflow-testing/nosla-ubuntu16.04-manylinux2010@%s" % container_digests["ubuntu16.04-manylinux2010"],
-        "Pool": "default",
-    },
-)
-
-# Built with //tensorflow/tools/ci_build/Dockerfile.rbe.cuda10.0-cudnn7-ubuntu16.04-manylinux2010.
-platform(
-    name = "rbe_cuda10.0-cudnn7-ubuntu16.04-manylinux2010",
-    constraint_values = [
-        "@bazel_tools//platforms:x86_64",
-        "@bazel_tools//platforms:linux",
-    ],
-    exec_properties = {
-        "container-image": "docker://gcr.io/tensorflow-testing/nosla-cuda10.0-cudnn7-ubuntu16.04-manylinux2010@%s" % container_digests["cuda10.0-cudnn7-ubuntu16.04-manylinux2010"],
-        "Pool": "default",
-    },
-)
-
-# Built with //tensorflow/tools/ci_build/Dockerfile.rbe.cuda10.1-cudnn7-ubuntu16.04-manylinux2010.
-platform(
-    name = "rbe_cuda10.1-cudnn7-ubuntu16.04-manylinux2010",
-    constraint_values = [
-        "@bazel_tools//platforms:x86_64",
-        "@bazel_tools//platforms:linux",
-    ],
-    exec_properties = {
-        "container-image": "docker://gcr.io/tensorflow-testing/nosla-cuda10.1-cudnn7-ubuntu16.04-manylinux2010@%s" % container_digests["cuda10.1-cudnn7-ubuntu16.04-manylinux2010"],
-        "Pool": "default",
-    },
-)
-
-# Built with //tensorflow/tools/ci_build/Dockerfile.rbe.rocm-ubuntu16.04
-platform(
-    name = "rbe_rocm-ubuntu16.04",
-    constraint_values = [
-        "@bazel_tools//platforms:x86_64",
-        "@bazel_tools//platforms:linux",
-    ],
-    exec_properties = {
-        "container-image": "docker://gcr.io/tensorflow-testing/nosla-rocm-ubuntu16.04@%s" % container_digests["rocm-ubuntu16.04"],
         "Pool": "default",
     },
 )

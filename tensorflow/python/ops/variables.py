@@ -27,7 +27,6 @@ import six
 from tensorflow.core.framework import attr_value_pb2
 from tensorflow.core.framework import variable_pb2
 from tensorflow.python import pywrap_tensorflow  # pylint: disable=unused-import
-from tensorflow.python import _pywrap_utils
 from tensorflow.python.eager import context
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
@@ -41,12 +40,14 @@ from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import state_ops
 from tensorflow.python.platform import tf_logging as logging
 from tensorflow.python.training.tracking import base as trackable
+from tensorflow.python.util import _pywrap_utils
 from tensorflow.python.util import compat
 from tensorflow.python.util import object_identity
 from tensorflow.python.util import tf_should_use
 from tensorflow.python.util.deprecation import deprecated
 from tensorflow.python.util.deprecation import deprecated_args
 from tensorflow.python.util.tf_export import tf_export
+from tensorflow.python.types import core
 
 
 def default_variable_creator(_, **kwds):
@@ -82,6 +83,12 @@ class VariableSynchronization(enum.Enum):
   * `ON_READ`: Indicates that the variable will be aggregated across devices
     when it is read (eg. when checkpointing or when evaluating an op that uses
     the variable).
+
+    Example:
+  >>> temp_grad=[tf.Variable([0.], trainable=False,
+  ...                      synchronization=tf.VariableSynchronization.ON_READ,
+  ...                      aggregation=tf.VariableAggregation.MEAN
+  ...                      )]
   """
   AUTO = 0
   NONE = 1
@@ -264,6 +271,7 @@ class VariableMetaclass(type):
 
 
 @tf_export("Variable", v1=[])
+# TODO(mdan): This should subclass core.Tensor, and not all its subclasses?
 class Variable(six.with_metaclass(VariableMetaclass, trackable.Trackable)):
   """See the [variable guide](https://tensorflow.org/guide/variable).
 
@@ -359,11 +367,9 @@ class Variable(six.with_metaclass(VariableMetaclass, trackable.Trackable)):
   """
 
   @deprecated_args(
-      None,
-      "A variable's value can be manually cached by calling "
+      None, "A variable's value can be manually cached by calling "
       "tf.Variable.read_value() under a tf.device scope. The caching_device "
-      "argument does not work properly.",
-      "caching_device")
+      "argument does not work properly.", "caching_device")
   def __init__(self,
                initial_value=None,
                trainable=None,
@@ -392,10 +398,11 @@ class Variable(six.with_metaclass(VariableMetaclass, trackable.Trackable)):
       validate_shape: If `False`, allows the variable to be initialized with a
         value of unknown shape. If `True`, the default, the shape of
         `initial_value` must be known.
-      caching_device: Optional device string describing where the Variable
-        should be cached for reading.  Defaults to the Variable's device. If not
-        `None`, caches on another device.  Typical use is to cache on the device
-        where the Ops using the Variable reside, to deduplicate copying through
+      caching_device: Note: This argument is only valid when using a v1-style
+        `Session`. Optional device string describing where the Variable should
+        be cached for reading. Defaults to the Variable's device. If not `None`,
+        caches on another device. Typical use is to cache on the device where
+        the Ops using the Variable reside, to deduplicate copying through
         `Switch` and other conditional statements.
       name: Optional name for the variable. Defaults to `'Variable'` and gets
         uniquified automatically.
@@ -810,14 +817,13 @@ class Variable(six.with_metaclass(VariableMetaclass, trackable.Trackable)):
         v = tf.Variable([1, 2, 3, 4, 5, 6, 7, 8])
         indices = tf.constant([[4], [3], [1] ,[7]])
         updates = tf.constant([9, 10, 11, 12])
-        op = v.scatter_nd_sub(indices, updates)
-        with tf.compat.v1.Session() as sess:
-          print sess.run(op)
+        v.scatter_nd_sub(indices, updates)
+        print(v)
     ```
 
-    The resulting update to v would look like this:
+    After the update `v` would look like this:
 
-        [1, -9, 3, -6, -6, 6, 7, -4]
+        [1, -9, 3, -6, -4, 6, 7, -4]
 
     See `tf.scatter_nd` for more details about how to make updates to
     slices.
@@ -857,9 +863,8 @@ class Variable(six.with_metaclass(VariableMetaclass, trackable.Trackable)):
         v = tf.Variable([1, 2, 3, 4, 5, 6, 7, 8])
         indices = tf.constant([[4], [3], [1] ,[7]])
         updates = tf.constant([9, 10, 11, 12])
-        add = v.scatter_nd_add(indices, updates)
-        with tf.compat.v1.Session() as sess:
-          print sess.run(add)
+        v.scatter_nd_add(indices, updates)
+        print(v)
     ```
 
     The resulting update to v would look like this:
@@ -904,9 +909,8 @@ class Variable(six.with_metaclass(VariableMetaclass, trackable.Trackable)):
         v = tf.Variable([1, 2, 3, 4, 5, 6, 7, 8])
         indices = tf.constant([[4], [3], [1] ,[7]])
         updates = tf.constant([9, 10, 11, 12])
-        op = v.scatter_nd_assign(indices, updates)
-        with tf.compat.v1.Session() as sess:
-          print sess.run(op)
+        v.scatter_nd_update(indices, updates)
+        print(v)
     ```
 
     The resulting update to v would look like this:
@@ -1076,8 +1080,8 @@ class Variable(six.with_metaclass(VariableMetaclass, trackable.Trackable)):
 
   def __hash__(self):
     if ops.Tensor._USE_EQUALITY and ops.executing_eagerly_outside_functions():  # pylint: disable=protected-access
-      raise TypeError("Variable is unhashable if Tensor equality is enabled. "
-                      "Instead, use tensor.experimental_ref() as the key.")
+      raise TypeError("Variable is unhashable. "
+                      "Instead, use tensor.ref() as the key.")
     else:
       return id(self)
 
@@ -1209,56 +1213,48 @@ class Variable(six.with_metaclass(VariableMetaclass, trackable.Trackable)):
   def _get_save_slice_info(self):
     return self._save_slice_info
 
+  @deprecated(None, "Use ref() instead.")
   def experimental_ref(self):
-    # tf.Tensor also has the same experimental_ref() API.  If you update the
-    # documenation here, please update tf.Tensor.experimental_ref() as well.
+    return self.ref()
+
+  def ref(self):
+    # tf.Tensor also has the same ref() API.  If you update the
+    # documentation here, please update tf.Tensor.ref() as well.
     """Returns a hashable reference object to this Variable.
 
-    Warning: Experimental API that could be changed or removed.
-
-    The primary usecase for this API is to put variables in a set/dictionary.
+    The primary use case for this API is to put variables in a set/dictionary.
     We can't put variables in a set/dictionary as `variable.__hash__()` is no
     longer available starting Tensorflow 2.0.
 
-    ```python
-    import tensorflow as tf
+    The following will raise an exception starting 2.0
 
-    x = tf.Variable(5)
-    y = tf.Variable(10)
-    z = tf.Variable(10)
+    >>> x = tf.Variable(5)
+    >>> y = tf.Variable(10)
+    >>> z = tf.Variable(10)
+    >>> variable_set = {x, y, z}
+    Traceback (most recent call last):
+      ...
+    TypeError: Variable is unhashable. Instead, use tensor.ref() as the key.
+    >>> variable_dict = {x: 'five', y: 'ten'}
+    Traceback (most recent call last):
+      ...
+    TypeError: Variable is unhashable. Instead, use tensor.ref() as the key.
 
-    # The followings will raise an exception starting 2.0
-    # TypeError: Variable is unhashable if Variable equality is enabled.
-    variable_set = {x, y, z}
-    variable_dict = {x: 'five', y: 'ten'}
-    ```
+    Instead, we can use `variable.ref()`.
 
-    Instead, we can use `variable.experimental_ref()`.
-
-    ```python
-    variable_set = {x.experimental_ref(),
-                    y.experimental_ref(),
-                    z.experimental_ref()}
-
-    print(x.experimental_ref() in variable_set)
-    ==> True
-
-    variable_dict = {x.experimental_ref(): 'five',
-                     y.experimental_ref(): 'ten',
-                     z.experimental_ref(): 'ten'}
-
-    print(variable_dict[y.experimental_ref()])
-    ==> ten
-    ```
+    >>> variable_set = {x.ref(), y.ref(), z.ref()}
+    >>> x.ref() in variable_set
+    True
+    >>> variable_dict = {x.ref(): 'five', y.ref(): 'ten', z.ref(): 'ten'}
+    >>> variable_dict[y.ref()]
+    'ten'
 
     Also, the reference object provides `.deref()` function that returns the
     original Variable.
 
-    ```python
-    x = tf.Variable(5)
-    print(x.experimental_ref().deref())
-    ==> <tf.Variable 'Variable:0' shape=() dtype=int32, numpy=5>
-    ```
+    >>> x = tf.Variable(5)
+    >>> x.ref().deref()
+    <tf.Variable 'Variable:0' shape=() dtype=int32, numpy=5>
     """
     return object_identity.Reference(self)
 
@@ -1559,7 +1555,7 @@ class VariableV1(Variable):
 
 
 # TODO(apassos): do not repeat all comments here
-class RefVariable(VariableV1):
+class RefVariable(VariableV1, core.Tensor):
   """Ref-based implementation of variables."""
 
   def __init__(
@@ -1800,8 +1796,13 @@ class RefVariable(VariableV1):
           # pylint: disable=protected-access
           with ops.get_default_graph()._attr_scope({"_class": attr}):
             with ops.name_scope("Initializer"), ops.device(None):
+              initial_value = initial_value()
+              if isinstance(initial_value, trackable.CheckpointInitialValue):
+                self._maybe_initialize_trackable()
+                self._update_uid = initial_value.checkpoint_position.restore_uid
+                initial_value = initial_value.wrapped_value
               self._initial_value = ops.convert_to_tensor(
-                  initial_value(), name="initial_value", dtype=dtype)
+                  initial_value, name="initial_value", dtype=dtype)
               if shape is None:
                 shape = (
                     self._initial_value.get_shape()
@@ -2473,6 +2474,72 @@ class RefVariable(VariableV1):
     return gen_state_ops.scatter_nd_update(
         self._variable, indices, updates, use_locking=True, name=name)
 
+  def scatter_nd_max(self, indices, updates, name=None):
+    """Updates this variable with the max of `tf.IndexedSlices` and itself.
+
+    `ref` is a `Tensor` with rank `P` and `indices` is a `Tensor` of rank `Q`.
+
+    `indices` must be integer tensor, containing indices into `ref`.
+    It must be shape `[d_0, ..., d_{Q-2}, K]` where `0 < K <= P`.
+
+    The innermost dimension of `indices` (with length `K`) corresponds to
+    indices into elements (if `K = P`) or slices (if `K < P`) along the `K`th
+    dimension of `ref`.
+
+    `updates` is `Tensor` of rank `Q-1+P-K` with shape:
+
+    ```
+    [d_0, ..., d_{Q-2}, ref.shape[K], ..., ref.shape[P-1]].
+    ```
+
+    See `tf.scatter_nd` for more details about how to make updates to
+    slices.
+
+    Args:
+      indices: The indices to be used in the operation.
+      updates: The values to be used in the operation.
+      name: the name of the operation.
+
+    Returns:
+      A `Tensor` that will hold the new value of this variable after
+      the scattered addition has completed.
+    """
+    return gen_state_ops.scatter_nd_max(
+        self._variable, indices, updates, use_locking=True, name=name)
+
+  def scatter_nd_min(self, indices, updates, name=None):
+    """Updates this variable with the min of `tf.IndexedSlices` and itself.
+
+    `ref` is a `Tensor` with rank `P` and `indices` is a `Tensor` of rank `Q`.
+
+    `indices` must be integer tensor, containing indices into `ref`.
+    It must be shape `[d_0, ..., d_{Q-2}, K]` where `0 < K <= P`.
+
+    The innermost dimension of `indices` (with length `K`) corresponds to
+    indices into elements (if `K = P`) or slices (if `K < P`) along the `K`th
+    dimension of `ref`.
+
+    `updates` is `Tensor` of rank `Q-1+P-K` with shape:
+
+    ```
+    [d_0, ..., d_{Q-2}, ref.shape[K], ..., ref.shape[P-1]].
+    ```
+
+    See `tf.scatter_nd` for more details about how to make updates to
+    slices.
+
+    Args:
+      indices: The indices to be used in the operation.
+      updates: The values to be used in the operation.
+      name: the name of the operation.
+
+    Returns:
+      A `Tensor` that will hold the new value of this variable after
+      the scattered addition has completed.
+    """
+    return gen_state_ops.scatter_nd_min(
+        self._variable, indices, updates, use_locking=True, name=name)
+
   def _strided_slice_assign(self, begin, end, strides, value, name, begin_mask,
                             end_mask, ellipsis_mask, new_axis_mask,
                             shrink_axis_mask):
@@ -3040,7 +3107,6 @@ class PartitionedVariable(object):
 # allowing instances of the class to be used as tensors.
 ops.register_tensor_conversion_function(RefVariable,
                                         RefVariable._TensorConversionFunction)  # pylint: disable=protected-access
-ops.register_dense_tensor_like_type(RefVariable)
 
 
 @tf_export(v1=["global_variables"])
@@ -3197,6 +3263,11 @@ def variables_initializer(var_list, name="init"):
   If `var_list` is empty, however, the function still returns an Op that can
   be run. That Op just has no effect.
 
+  @compatibility(TF2)
+  In TF2, variables are initialized immediately when they are created. There is
+  no longer a need to run variable initializers before using them.
+  @end_compatibility
+
   Args:
     var_list: List of `Variable` objects to initialize.
     name: Optional name for the returned operation.
@@ -3223,6 +3294,11 @@ def global_variables_initializer():
 
   This is just a shortcut for `variables_initializer(global_variables())`
 
+  @compatibility(TF2)
+  In TF2, variables are initialized immediately when they are created. There is
+  no longer a need to run variable initializers before using them.
+  @end_compatibility
+
   Returns:
     An Op that initializes global variables in the graph.
   """
@@ -3244,6 +3320,11 @@ def local_variables_initializer():
   """Returns an Op that initializes all local variables.
 
   This is just a shortcut for `variables_initializer(local_variables())`
+
+  @compatibility(TF2)
+  In TF2, variables are initialized immediately when they are created. There is
+  no longer a need to run variable initializers before using them.
+  @end_compatibility
 
   Returns:
     An Op that initializes all local variables in the graph.

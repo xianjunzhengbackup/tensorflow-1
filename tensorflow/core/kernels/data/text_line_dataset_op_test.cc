@@ -11,13 +11,19 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/kernels/data/text_line_dataset_op.h"
 
-#include "tensorflow/core/kernels/data/dataset_test_base.h"
+#include "tensorflow/core/data/dataset_test_base.h"
 
 namespace tensorflow {
 namespace data {
 namespace {
 
 constexpr char kNodeName[] = "text_line_dataset";
+
+tstring LocalTempFilename() {
+  std::string path;
+  CHECK(Env::Default()->LocalTempFilename(&path));
+  return tstring(path);
+}
 
 class TextLineDatasetParams : public DatasetParams {
  public:
@@ -84,9 +90,7 @@ Status CreateTestFiles(const std::vector<tstring>& filenames,
 
 // Test case 1: multiple text files with ZLIB compression.
 TextLineDatasetParams TextLineDatasetParams1() {
-  std::vector<tstring> filenames = {
-      absl::StrCat(testing::TmpDir(), "/text_line_ZLIB_1"),
-      absl::StrCat(testing::TmpDir(), "/text_line_ZLIB_2")};
+  std::vector<tstring> filenames = {LocalTempFilename(), LocalTempFilename()};
   std::vector<tstring> contents = {
       absl::StrCat("hello world\n", "11223334455\n"),
       absl::StrCat("abcd, EFgH\n", "           \n", "$%^&*()\n")};
@@ -103,9 +107,7 @@ TextLineDatasetParams TextLineDatasetParams1() {
 
 // Test case 2: multiple text files with GZIP compression.
 TextLineDatasetParams TextLineDatasetParams2() {
-  std::vector<tstring> filenames = {
-      absl::StrCat(testing::TmpDir(), "/text_line_GZIP_1"),
-      absl::StrCat(testing::TmpDir(), "/text_line_GZIP_2")};
+  std::vector<tstring> filenames = {LocalTempFilename(), LocalTempFilename()};
   std::vector<tstring> contents = {
       absl::StrCat("hello world\n", "11223334455\n"),
       absl::StrCat("abcd, EFgH\n", "           \n", "$%^&*()\n")};
@@ -122,9 +124,7 @@ TextLineDatasetParams TextLineDatasetParams2() {
 
 // Test case 3: multiple text files without compression.
 TextLineDatasetParams TextLineDatasetParams3() {
-  std::vector<tstring> filenames = {
-      absl::StrCat(testing::TmpDir(), "/text_line_UNCOMPRESSED_1"),
-      absl::StrCat(testing::TmpDir(), "/text_line_UNCOMPRESSED_2")};
+  std::vector<tstring> filenames = {LocalTempFilename(), LocalTempFilename()};
   std::vector<tstring> contents = {
       absl::StrCat("hello world\n", "11223334455\n"),
       absl::StrCat("abcd, EFgH\n", "           \n", "$%^&*()\n")};

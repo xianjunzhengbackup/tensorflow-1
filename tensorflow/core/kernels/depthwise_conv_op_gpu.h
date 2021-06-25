@@ -672,15 +672,11 @@ Status LaunchDepthwiseConv2dGPUSmall(OpKernelContext* ctx,
 
 // Returns whether the context's GPU supports efficient fp16 math.
 inline bool HasFastHalfMath(OpKernelContext* ctx) {
-  int major, minor;
-  ctx->op_device_context()
-      ->stream()
-      ->parent()
-      ->GetDeviceDescription()
-      .cuda_compute_capability(&major, &minor);
-  auto cuda_arch = major * 100 + minor * 10;
+  se::CudaComputeCapability compute_capability =
+      ctx->op_device_context()->stream()->GetCudaComputeCapability();
   // GPUs before sm_53 don't support fp16 math, and sm_61's fp16 math is slow.
-  return cuda_arch >= 530 && cuda_arch != 610;
+  return compute_capability.IsAtLeast(5, 3) &&
+         compute_capability != se::CudaComputeCapability{6, 1};
 }
 
 template <typename T, DepthwiseConv2dDirection kDirection,
@@ -987,7 +983,9 @@ Status LaunchDepthwiseConv2dBackpropInputGPU(OpKernelContext* ctx,
                                              const T* filter, T* in_backprop,
                                              TensorFormat data_format) {
   if (args.depth_multiplier == 1) {
-    if (CanLaunchDepthwiseConv2dGPUSmall(args)) {
+    // This kernel doesn't currently work in all cases so it is disabled.
+    // TODO(b/150988950): Fix and reenable this kernel.
+    if (/* CanLaunchDepthwiseConv2dGPUSmall(args) */ false) {
       return LaunchDepthwiseConv2dGPUSmall<
           T, DIRECTION_BACKWARD, kKnownFilterWidth, kKnownFilterHeight>(
           ctx, args, out_backprop, filter, in_backprop, data_format);
@@ -1761,7 +1759,7 @@ void LaunchDepthwiseConvBackpropFilterOp<GpuDevice, T>::operator()(
   int num_filter_backprop =
       args.filter_rows * args.filter_cols * args.out_depth;
   se::DeviceMemoryBase filter_bp_ptr(filter_backprop, num_filter_backprop);
-  stream->ThenMemset32(&filter_bp_ptr, 0, num_filter_backprop * sizeof(T));
+  stream->ThenMemZero(&filter_bp_ptr, num_filter_backprop * sizeof(T));
 
   if (args.filter_rows == 3 && args.filter_cols == 3) {
     OP_REQUIRES_OK(

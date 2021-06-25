@@ -45,8 +45,10 @@ CONVERSION_RULES = (
     DoNotConvert('pstats'),
     DoNotConvert('re'),
     DoNotConvert('threading'),
+    DoNotConvert('urllib'),
 
     # Known libraries
+    DoNotConvert('matplotlib'),
     DoNotConvert('numpy'),
     DoNotConvert('pandas'),
     DoNotConvert('tensorflow'),
@@ -57,4 +59,6 @@ CONVERSION_RULES = (
 
     # TODO(b/133842282): Remove.
     DoNotConvert('tensorflow_datasets.core'),
+
+    DoNotConvert('keras'),
 )

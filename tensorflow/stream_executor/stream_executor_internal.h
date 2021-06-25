@@ -44,7 +44,6 @@ limitations under the License.
 #include "tensorflow/stream_executor/platform.h"
 #include "tensorflow/stream_executor/platform/port.h"
 #include "tensorflow/stream_executor/plugin_registry.h"
-#include "tensorflow/stream_executor/shared_memory_config.h"
 #include "tensorflow/stream_executor/trace_listener.h"
 
 namespace stream_executor {
@@ -267,9 +266,6 @@ class StreamExecutorInterface {
   virtual int PlatformDeviceCount() = 0;
   virtual port::Status EnablePeerAccessTo(StreamExecutorInterface *other) = 0;
   virtual bool CanEnablePeerAccessTo(StreamExecutorInterface *other) = 0;
-  virtual SharedMemoryConfig GetDeviceSharedMemoryConfig() = 0;
-  virtual port::Status SetDeviceSharedMemoryConfig(
-      SharedMemoryConfig config) = 0;
 
   virtual int64 GetDeviceLoad() { return -1; }
 
@@ -286,8 +282,9 @@ class StreamExecutorInterface {
   // If ModuleHandle is set then we search for `symbol_name` only within the
   // module corresponding to `module_handle`.  Otherwise all loaded modules are
   // searched.
-  virtual bool GetSymbol(const string &symbol_name, ModuleHandle module_handle,
-                         void **mem, size_t *bytes) {
+  virtual bool GetSymbol(const std::string &symbol_name,
+                         ModuleHandle module_handle, void **mem,
+                         size_t *bytes) {
     return false;
   }
 
@@ -379,6 +376,13 @@ class StreamExecutorInterface {
   virtual absl::optional<AllocatorStats> GetAllocatorStats() {
     return absl::nullopt;
   }
+
+  // If implemented, clears the internal stats except for the `in_use` fields
+  // and sets the `peak_bytes_in_use` to be equal to the `bytes_in_use`. Returns
+  // true if implemented.
+  //
+  // REQUIRES: GetAllocatorStats is overridden.
+  virtual bool ClearAllocatorStats() { return false; }
 
   // Clears the compilation cache from volatile memory. Returns OK if no
   // compilation cache exists or if clearing the compilation cache is

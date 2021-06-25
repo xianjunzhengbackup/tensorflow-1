@@ -12,14 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Keras categorical preprocessing layers."""
+"""Keras reduction layer."""
 # pylint: disable=g-classes-have-attributes
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.python.keras.engine.base_layer import Layer
+from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.platform import tf_logging as logging
 
@@ -47,7 +44,7 @@ class Reduction(Layer):
   This layer performs a reduction across one axis of its input data. This
   data may optionally be weighted by passing in an identical float tensor.
 
-  Arguments:
+  Args:
     reduction: The type of reduction to perform. Can be one of the following:
       "max", "mean", "min", "prod", or "sum". This layer uses the Tensorflow
       reduce op which corresponds to that reduction (so, for "mean", we use
@@ -74,13 +71,17 @@ class Reduction(Layer):
     # We temporarily turn off autocasting, as it does not apply to named call
     # kwargs.
     super(Reduction, self).__init__(**kwargs)
-    self._supports_ragged_inputs = True
 
   def call(self, inputs, weights=None):
     # If we are not weighting the inputs we can immediately reduce the data
     # and return it.
     if weights is None:
       return get_reduce_op(self.reduction)(inputs, axis=self.axis)
+
+    # TODO(momernick): Add checks for this and a decent error message if the
+    # weight shape isn't compatible.
+    if weights.shape.rank + 1 == inputs.shape.rank:
+      weights = array_ops.expand_dims(weights, -1)
 
     weighted_inputs = math_ops.multiply(inputs, weights)
 

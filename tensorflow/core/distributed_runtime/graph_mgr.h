@@ -69,7 +69,7 @@ class WorkerSession;
 //   EXPECT_EQ(out["c"], Tensor({4, 6}));
 class GraphMgr {
  public:
-  explicit GraphMgr(const WorkerEnv* worker_env, DeviceMgr* device_mgr);
+  explicit GraphMgr(const WorkerEnv* worker_env, const DeviceMgr* device_mgr);
   ~GraphMgr();
 
   // Registers a graph. Fills in "handle". The registered graph retains a
@@ -145,13 +145,13 @@ class GraphMgr {
   };
 
   const WorkerEnv* worker_env_;  // Not owned.
-  DeviceMgr* device_mgr_;
+  const DeviceMgr* device_mgr_;
 
   CostModelManager cost_model_manager_;
 
   // Owned.
   mutex mu_;
-  int64 next_id_ GUARDED_BY(mu_) = 0;
+  int64 next_id_ TF_GUARDED_BY(mu_) = 0;
 
   // If true, blocks until device has finished all queued operations in a step.
   bool sync_on_finish_ = true;
@@ -163,13 +163,11 @@ class GraphMgr {
   // mechanism to gc these graphs.
   std::unordered_map<string, Item*> table_;
 
-  void StartParallelExecutors(const string& handle, int64 step_id, Item* item,
-                              Rendezvous* rendezvous,
-                              CollectiveExecutor::Handle* ce_handle,
-                              StepStatsCollector* collector,
-                              CostGraphDef* cost_graph,
-                              CancellationManager* cancellation_manager,
-                              WorkerSession* session, StatusCallback done);
+  void StartParallelExecutors(
+      const string& handle, int64 step_id, Item* item, Rendezvous* rendezvous,
+      CollectiveExecutor::Handle* ce_handle, StepStatsCollector* collector,
+      CostGraphDef* cost_graph, CancellationManager* cancellation_manager,
+      WorkerSession* session, int64 start_time_usecs, StatusCallback done);
 
   // Don't attempt to process cost models unless explicitly requested for at
   // least one of the items.

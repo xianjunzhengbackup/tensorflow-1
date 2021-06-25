@@ -26,13 +26,13 @@ limitations under the License.
 #include <unordered_set>
 #include <vector>
 
+#include "tensorflow/core/common_runtime/graph_constructor.h"
 #include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/framework/node_def.pb.h"
 #include "tensorflow/core/framework/step_stats.pb.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/graph/algorithm.h"
 #include "tensorflow/core/graph/graph.h"
-#include "tensorflow/core/graph/graph_constructor.h"
 #include "tensorflow/core/lib/strings/numbers.h"
 #include "tensorflow/core/lib/strings/str_util.h"
 #include "tensorflow/core/lib/strings/strcat.h"
@@ -234,7 +234,7 @@ void SleepSeconds(double sleep_seconds) {
     return;
   }
 #ifdef PLATFORM_WINDOWS
-  Sleep(sleep_seconds * 1000);
+  Env::Default()->SleepForMicroseconds(sleep_seconds * 1000 * 1000);
 #else
   // Convert the inference_delay string into a timespec.
   timespec req;

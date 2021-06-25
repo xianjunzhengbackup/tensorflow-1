@@ -22,8 +22,7 @@ limitations under the License.
 #include <utility>
 #include "tensorflow/core/platform/mutex.h"
 
-#if GOOGLE_CUDA
-#if GOOGLE_TENSORRT
+#if GOOGLE_CUDA && GOOGLE_TENSORRT
 
 #include "third_party/gpus/cuda/include/cuda_runtime_api.h"
 #include "third_party/tensorrt/NvInfer.h"
@@ -52,10 +51,10 @@ struct TRTInt8Calibrator : public nvinfer1::IInt8EntropyCalibrator {
 
   ~TRTInt8Calibrator();
 
-  int getBatchSize() const override;
+  int getBatchSize() const noexcept override;
 
   bool getBatch(void* bindings[], const char* names[],
-                int num_bindings) override;
+                int num_bindings) noexcept override;
 
   // Feed calibration data to the calibrator, and return true if the data is
   // accepted. Return false if the calibrator has been terminated.
@@ -70,9 +69,10 @@ struct TRTInt8Calibrator : public nvinfer1::IInt8EntropyCalibrator {
   void setDone();
 
   // If not null, calibration is skipped.
-  const void* readCalibrationCache(std::size_t& length) override;
+  const void* readCalibrationCache(std::size_t& length) noexcept override;
 
-  void writeCalibrationCache(const void* ptr, std::size_t length) override;
+  void writeCalibrationCache(const void* ptr,
+                             std::size_t length) noexcept override;
 
   const string& getCalibrationTableAsString() { return calibration_table_; }
 
@@ -101,6 +101,5 @@ struct TRTInt8Calibrator : public nvinfer1::IInt8EntropyCalibrator {
 }  // namespace tensorrt
 }  // namespace tensorflow
 
-#endif
-#endif
+#endif  // GOOGLE_CUDA && GOOGLE_TENSORRT
 #endif  // TENSORFLOW_COMPILER_TF2TENSORRT_UTILS_TRT_INT8_CALIBRATOR_H_

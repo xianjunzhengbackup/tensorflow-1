@@ -18,8 +18,12 @@ limitations under the License.
 
 #include <memory>
 
-#include "mlir/IR/MLIRContext.h"  // TF:llvm-project
-#include "mlir/Support/LogicalResult.h"  // TF:llvm-project
+#include "llvm/ADT/StringRef.h"
+#include "mlir/IR/MLIRContext.h"  // from @llvm-project
+#include "mlir/IR/PatternMatch.h"  // from @llvm-project
+#include "mlir/Pass/Pass.h"  // from @llvm-project
+#include "mlir/Pass/PassRegistry.h"  // from @llvm-project
+#include "mlir/Support/LogicalResult.h"  // from @llvm-project
 
 namespace mlir {
 
@@ -27,54 +31,78 @@ class FuncOp;
 class ModuleOp;
 class Operation;
 template <typename T>
-class OpPassBase;
+class OperationPass;
+class Pass;
 
-namespace xla_hlo {
+namespace mhlo {
 
 /// Lowers from TF dialect to HLO dialect. When allow_partial_conversion is
 /// false, emits an error if there is any operation that can't be legalized.
-std::unique_ptr<OpPassBase<FuncOp>> createLegalizeTFPass(
-    bool allow_partial_conversion = false);
+/// When `tf2xla_fallback_device_type` is not `None`, also uses legalization
+/// patterns from TF2XLA fallback for provided device type (see
+/// legalize_tf_with_tf2xla.cc for details). By default, TF2XLA fallback is not
+/// used.
+std::unique_ptr<OperationPass<FuncOp>> createLegalizeTFPass(
+    bool allow_partial_conversion = false, bool legalize_chlo = true,
+    llvm::Optional<StringRef> tf2xla_fallback_device_type = llvm::None,
+    bool prefer_tf2xla = false);
+
+/// Lowers from TF dialect to HLO dialect using tf2xla op kernels for the
+/// specified device type.
+std::unique_ptr<OperationPass<FuncOp>> createLegalizeTfWithTf2XlaPass(
+    llvm::StringRef device_type, bool prefer_tf2xla = false);
+
+/// Replaces types that do not exist in MHLO with equivalent types that do
+/// exist.
+std::unique_ptr<OperationPass<void>> CreateLegalizeTfTypesPass();
+
+/// Adds the TF to XLA via TF2XLA rewrite patterns to the pattern list.
+/// `prefer_tf2xla` means an op will be included iff it is not in
+/// `MlirLegalizedUnderPreferTf2XlaSet`. `!prefer_tf2xla` mean an op will be
+/// included iff it is in `IsOpAllowedTf2XlaFallback`.
+void PopulateLegalizeTfWithTf2XlaPatterns(llvm::StringRef device_type,
+                                          OwningRewritePatternList& patterns,
+                                          MLIRContext* ctx,
+                                          bool prefer_tf2xla = false);
+
+/// Adds the TF to TF lowerings and TF to XLA rewrite patterns to the pattern
+/// list.
+void PopulateLegalizeTfPatterns(MLIRContext* context,
+                                OwningRewritePatternList* patterns);
+
+/// Checks whether the op is supported by the Tf2Xla fallback for legalization.
+bool IsOpAllowedTf2XlaFallback(Operation* op);
 
 /// Lowers from TF dialect's control flow to HLO dialect's control flow.
-std::unique_ptr<OpPassBase<ModuleOp>> createLegalizeTFControlFlowPass();
+std::unique_ptr<OperationPass<ModuleOp>> createLegalizeTFControlFlowPass();
 
 /// Converts the provided Operation as well as all nested operations into HLO
 /// dialect using the conversion patterns registered by the HLO dialect. When
 /// allow_partial_conversion is false, emits an error if there is any operation
 /// that can't be legalized.
-LogicalResult legalizeTF(Operation* op, bool allow_partial_conversion = false);
+/// When `tf2xla_fallback_device_type` is not `None`, also uses legalization
+/// patterns from TF2XLA fallback for provided device type (see
+/// legalize_tf_with_tf2xla.cc for details). By default, TF2XLA fallback is not
+/// used.
+LogicalResult legalizeTF(
+    Operation* op, bool allow_partial_conversion = false,
+    bool legalize_chlo = true,
+    llvm::Optional<StringRef> tf2xla_fallback_device_type = llvm::None,
+    bool prefer_tf2xla = false);
 
-/// Lowers HLO control flow ops to the Standard dialect.
-std::unique_ptr<OpPassBase<FuncOp>> createLegalizeControlFlowPass();
+// Legalizes TF/XLA communication ops (TF dialect) to HLO dialect communication
+// ops.
+std::unique_ptr<OperationPass<ModuleOp>> CreateLegalizeTFCommunicationPass();
 
-/// Lowers from HLO dialect to Standard dialect.
-std::unique_ptr<OpPassBase<FuncOp>> createLegalizeToStdPass();
+// Prepare module for export to XLA HLO protos/instruction.
+std::unique_ptr<OperationPass<FuncOp>> CreatePrepareForExport();
 
-// Lowers from HLO dialect to LHLO dialect allocating/deallocating temporary
-// buffers if necessary.
-std::unique_ptr<OpPassBase<ModuleOp>> createLegalizeToLhloPass();
+#define GEN_PASS_REGISTRATION
+#include "tensorflow/compiler/mlir/xla/transforms/xla_passes.h.inc"
+#define GEN_PASS_REGISTRATION
+#include "tensorflow/compiler/mlir/xla/transforms/xla_legalize_tf_passes.h.inc"
 
-// Lowers from HLO dialect to Linalg dialect.
-std::unique_ptr<OpPassBase<FuncOp>> createLegalizeHloToLinalgPass();
-
-}  // namespace xla_hlo
-
-namespace xla_lhlo {
-
-// Lowers from LHLO dialect to Affine dialect.
-std::unique_ptr<OpPassBase<FuncOp>> createLegalizeToAffinePass();
-
-// Lowers from LHLO dialect to Linalg dialect.
-std::unique_ptr<OpPassBase<FuncOp>> createLegalizeLhloToLinalgPass();
-
-// Lowers from LHLO dialect to GPU dialect.
-std::unique_ptr<OpPassBase<FuncOp>> createLegalizeToGpuPass();
-
-// Fuses linalg ops obtained after LHLO lowering.
-std::unique_ptr<OpPassBase<FuncOp>> createLhloFuseLinalg();
-
-}  // namespace xla_lhlo
+}  // namespace mhlo
 }  // namespace mlir
 
 #endif  // TENSORFLOW_COMPILER_MLIR_XLA_TRANSFORMS_PASSES_H_

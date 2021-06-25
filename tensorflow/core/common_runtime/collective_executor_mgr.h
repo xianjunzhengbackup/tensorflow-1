@@ -25,9 +25,11 @@ class DeviceMgr;
 
 class CollectiveExecutorMgr : public CollectiveExecutorMgrInterface {
  public:
-  CollectiveExecutorMgr(const ConfigProto& config, const DeviceMgr* dev_mgr,
-                        std::unique_ptr<DeviceResolverInterface> dev_resolver,
-                        std::unique_ptr<ParamResolverInterface> param_resolver);
+  CollectiveExecutorMgr(
+      const ConfigProto& config, const DeviceMgr* dev_mgr,
+      std::unique_ptr<DeviceResolverInterface> dev_resolver,
+      std::unique_ptr<ParamResolverInterface> param_resolver,
+      std::unique_ptr<NcclCommunicatorInterface> nccl_communicator);
 
   virtual ~CollectiveExecutorMgr();
 
@@ -41,6 +43,10 @@ class CollectiveExecutorMgr : public CollectiveExecutorMgrInterface {
 
   DeviceResolverInterface* GetDeviceResolver() const override {
     return dev_resolver_.get();
+  }
+
+  NcclCommunicatorInterface* GetNcclCommunicator() const override {
+    return nccl_communicator_.get();
   }
 
   void GetStepSequenceAsync(const GetStepSequenceRequest* request,
@@ -64,6 +70,7 @@ class CollectiveExecutorMgr : public CollectiveExecutorMgrInterface {
   std::unique_ptr<DeviceResolverInterface> dev_resolver_;
   std::unique_ptr<ParamResolverInterface> param_resolver_;
   string gpu_ring_order_;
+  std::unique_ptr<NcclCommunicatorInterface> nccl_communicator_;
   // Unbounded work queue for scheduling potentially-blocking work during
   // collective op execution.  Ownership is shared between `this` and
   // `CollectiveRemoteAccessLocal`.
@@ -72,8 +79,18 @@ class CollectiveExecutorMgr : public CollectiveExecutorMgrInterface {
  private:
   mutex exec_mu_;
   // Map from step_id to CollectiveExecutor
-  gtl::FlatMap<int64, CollectiveExecutor*> executor_table_ GUARDED_BY(exec_mu_);
+  gtl::FlatMap<int64, CollectiveExecutor*> executor_table_
+      TF_GUARDED_BY(exec_mu_);
 };
+
+// Creates a local CollectiveExecutorMgr with production implementations of each
+// components. Cases that need to inject other implementations of these
+// components should call CollectiveExecutorMgr constructor directly. This only
+// supports a single host. For distributed use case, use
+// CreateProdRpcCollectiveExecutorMgr() instead.
+std::unique_ptr<CollectiveExecutorMgr> CreateProdLocalCollectiveExecutorMgr(
+    const ConfigProto& config, const DeviceMgr* device_mgr,
+    std::unique_ptr<NcclCommunicatorInterface> nccl_communicator);
 
 }  // namespace tensorflow
 #endif  // TENSORFLOW_CORE_COMMON_RUNTIME_COLLECTIVE_EXECUTOR_MGR_H_

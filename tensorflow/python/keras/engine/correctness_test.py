@@ -14,10 +14,6 @@
 # ==============================================================================
 """Tests for numerical correctness."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from absl.testing import parameterized
 import numpy as np
 
@@ -60,8 +56,7 @@ class SimpleBiasTest(keras_parameterized.TestCase):
     model.compile(
         keras.optimizer_v2.gradient_descent.SGD(0.1),
         'mae',
-        run_eagerly=testing_utils.should_run_eagerly(),
-        experimental_run_tf_function=testing_utils.should_run_tf_function())
+        run_eagerly=testing_utils.should_run_eagerly())
     return model
 
   def test_simple_bias_fit(self):
@@ -99,8 +94,7 @@ class MultipleInputTest(keras_parameterized.TestCase):
     model.compile(
         keras.optimizer_v2.gradient_descent.SGD(0.1),
         'mae',
-        run_eagerly=testing_utils.should_run_eagerly(),
-        experimental_run_tf_function=testing_utils.should_run_tf_function())
+        run_eagerly=testing_utils.should_run_eagerly())
     return model
 
   @parameterized.named_parameters(('subclassed', True), ('functional', False))

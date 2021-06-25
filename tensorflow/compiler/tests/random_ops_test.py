@@ -108,8 +108,9 @@ class RandomOpsTest(xla_test.XLATestCase):
           x = random_ops.random_uniform(
               shape=[1000], dtype=dtype, minval=-2, maxval=33)
         y = self.evaluate(x)
-        self.assertTrue((y >= -2).sum() == 1000)
-        self.assertTrue((y < 33).sum() == 1000)
+        msg = str(y) + str(dtype)
+        self.assertEqual((y >= -2).sum(), 1000, msg)
+        self.assertEqual((y < 33).sum(), 1000, msg)
 
   def testTruncatedNormalIsNotConstant(self):
 
@@ -190,6 +191,25 @@ class RandomOpsTest(xla_test.XLATestCase):
         self._checkTruncatedNormalIsInRange(
             x, a=a, b=b, mu=mu, sigma=sigma, count=count, stat_test=stat_test)
 
+  def testParameterizedTruncatedNormalBroadcasting(self):
+    for dtype in self._random_types() & {np.float32, np.float64}:
+      with self.session():
+        with self.test_scope():
+          a = -1.
+          b = 1.
+          mu = 0.
+          sigma = 1.
+          count = 10000000
+          x = random_ops.parameterized_truncated_normal(
+              shape=[1, count],
+              dtype=dtype,
+              means=mu,
+              stddevs=sigma,
+              minvals=[a],
+              maxvals=[b])
+        self._checkTruncatedNormalIsInRange(
+            x, a=a, b=b, mu=mu, sigma=sigma, count=count, stat_test=True)
+
   def testParameterizedTruncatedNormalIsInRangeCenter(self):
     count = 10000000
     self._implParameterizedTruncatedNormalIsInRange(
@@ -235,5 +255,5 @@ class RandomOpsTest(xla_test.XLATestCase):
       self.assertAllEqual(set(result.flatten()), set(expected))
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
   googletest.main()

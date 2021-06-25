@@ -32,8 +32,8 @@ limitations under the License.
 #include "tensorflow/core/util/work_sharder.h"
 
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
-#include "tensorflow/core/kernels/cuda_solvers.h"
-#include "tensorflow/core/kernels/cuda_sparse.h"
+#include "tensorflow/core/util/cuda_solvers.h"
+#include "tensorflow/core/util/cuda_sparse.h"
 #endif
 
 namespace tensorflow {
@@ -209,10 +209,8 @@ class CSRSparseMatrixToSparseTensorGPUOp : public OpKernel {
 
 REGISTER_GPU(float)
 REGISTER_GPU(double)
-#if GOOGLE_CUDA
 REGISTER_GPU(complex64)
 REGISTER_GPU(complex128)
-#endif
 
 #endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 

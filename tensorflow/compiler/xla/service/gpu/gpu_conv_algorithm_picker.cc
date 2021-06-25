@@ -22,10 +22,9 @@ limitations under the License.
 #include "absl/types/optional.h"
 #include "tensorflow/compiler/xla/literal_util.h"
 #include "tensorflow/compiler/xla/service/gpu/backend_configs.pb.h"
-#include "tensorflow/compiler/xla/service/gpu/buffer_comparator.h"
 #include "tensorflow/compiler/xla/service/gpu/convolution_thunk.h"
 #include "tensorflow/compiler/xla/service/gpu/gpu_autotuning.pb.h"
-#include "tensorflow/compiler/xla/service/gpu/hlo_algorithm_blacklist.h"
+#include "tensorflow/compiler/xla/service/gpu/hlo_algorithm_denylist.h"
 #include "tensorflow/compiler/xla/service/gpu/ir_emission_utils.h"
 #include "tensorflow/compiler/xla/service/gpu/stream_executor_util.h"
 #include "tensorflow/compiler/xla/service/hlo_casting_utils.h"
@@ -37,7 +36,11 @@ limitations under the License.
 #include "tensorflow/core/platform/mutex.h"
 #include "tensorflow/core/util/env_var.h"
 #include "tensorflow/core/util/proto/proto_utils.h"
+
+#if (defined(GOOGLE_CUDA) && GOOGLE_CUDA)
+#include "tensorflow/compiler/xla/service/gpu/buffer_comparator.h"
 #include "tensorflow/stream_executor/gpu/redzone_allocator.h"
+#endif
 
 namespace xla {
 namespace gpu {
@@ -118,34 +121,32 @@ std::vector<AlgorithmDesc> GetAlgorithms(CudnnConvKind kind,
   return algorithms;
 }
 
-StatusOr<std::vector<se::dnn::ProfileResult>> GetAlgorithms(
-    const HloCustomCallInstruction* conv,
+StatusOr<std::vector<se::dnn::ProfileResult>> GetMIOpenAlgorithms(
+    const HloCustomCallInstruction* instr,
     absl::Span<se::DeviceMemoryBase> operand_buffers,
     se::DeviceMemoryBase result_buffer, se::StreamExecutor* stream_exec,
-    se::Stream* stream) {
+    ScratchAllocator* scratch_allocator, se::Stream* stream) {
   std::vector<se::dnn::ProfileResult> algorithms;
 
-  TF_ASSIGN_OR_RETURN(se::dnn::ConvolutionKind kind,
-                      GetDnnConvolutionKind(conv));
+  TF_ASSIGN_OR_RETURN(GpuConvConfig config, GetGpuConvConfig(instr));
 
-  TF_ASSIGN_OR_RETURN(se::dnn::DataType dtype, GetDnnDataType(conv));
+  TF_ASSIGN_OR_RETURN(se::dnn::ConvolutionKind kind,
+                      GetDNNConvKindFromCudnnConvKind(config.kind));
+
+  TF_ASSIGN_OR_RETURN(se::dnn::DataType dtype,
+                      GetDNNDataTypeFromPrimitiveType(config.output_type));
 
   TF_ASSIGN_OR_RETURN(GpuConvParams params,
-                      GetGpuConvParams(conv, operand_buffers, result_buffer));
+                      GetGpuConvParams(config, operand_buffers, result_buffer));
 
   bool succ = stream_exec->GetMIOpenConvolveAlgorithms(
-      kind, stream, dtype, params.input_descriptor, params.filter_descriptor,
-      params.conv_desc, params.output_descriptor, &algorithms);
+      kind, dtype, stream, params.config.input_descriptor, params.input_buf,
+      params.config.filter_descriptor, params.filter_buf,
+      params.config.output_descriptor, params.output_buf,
+      params.config.conv_desc, scratch_allocator, &algorithms);
   DCHECK(succ);
 
   return algorithms;
-}
-
-string AlgorithmToString(const AlgorithmDesc& algo) {
-  if (algo.tensor_ops_enabled()) {
-    return absl::StrCat(algo.algo_id(), "+TC");
-  }
-  return absl::StrCat(algo.algo_id());
 }
 
 string NumBytesToString(int64 bytes) {
@@ -170,11 +171,10 @@ tensorflow::CudnnVersion GetCudnnVersion(se::StreamExecutor* stream_executor) {
 tensorflow::ComputeCapability GetComputeCapability(
     se::StreamExecutor* stream_executor) {
   tensorflow::ComputeCapability cc;
-  int cc_major, cc_minor;
-  stream_executor->GetDeviceDescription().cuda_compute_capability(&cc_major,
-                                                                  &cc_minor);
-  cc.set_major(cc_major);
-  cc.set_minor(cc_minor);
+  se::CudaComputeCapability se_cc =
+      stream_executor->GetDeviceDescription().cuda_compute_capability();
+  cc.set_major(se_cc.major);
+  cc.set_minor(se_cc.minor);
   return cc;
 }
 
@@ -197,6 +197,7 @@ void PrintPlatformInfo(const se::Stream* stream) {
   }
 }
 
+#if (defined(GOOGLE_CUDA) && GOOGLE_CUDA)
 // Returns true if the redzones in `allocator`'s allocations are unmodified.
 //
 // If the redzones are modified, logs an error, sets the appropriate failure
@@ -240,6 +241,7 @@ StatusOr<bool> CheckRedzones(const se::RedzoneAllocator& allocator,
   PrintPlatformInfo(stream);
   return false;
 }
+#endif
 
 using ConvCacheKey =
     std::tuple<se::StreamExecutor*,
@@ -263,9 +265,9 @@ ConvCacheKey AutotuneCacheKeyfromInstruction(
 }
 
 tensorflow::mutex autotune_cache_lock(tensorflow::LINKER_INITIALIZED);
-auto& autotune_cache GUARDED_BY(autotune_cache_lock) =
+auto& autotune_cache TF_GUARDED_BY(autotune_cache_lock) =
     *new absl::flat_hash_map<ConvCacheKey, AutotuneResult>();
-auto& autotune_cache_stats GUARDED_BY(autotune_cache_lock) =
+auto& autotune_cache_stats TF_GUARDED_BY(autotune_cache_lock) =
     *new ConvCacheStats();
 }  // anonymous namespace
 
@@ -323,7 +325,9 @@ StatusOr<AutotuneResult> GpuConvAlgorithmPicker::PickBestAlgorithm(
   if (stream_exec_->platform_kind() == se::PlatformKind::kROCm) {
     result_or = PickBestAlgorithmNoCacheRocm(instr, allocator, stream);
   } else if (stream_exec_->platform_kind() == se::PlatformKind::kCuda) {
+#if (defined(GOOGLE_CUDA) && GOOGLE_CUDA)
     result_or = PickBestAlgorithmNoCacheCuda(instr, allocator, stream);
+#endif
   }
 
   if (result_or.ok()) {
@@ -333,35 +337,7 @@ StatusOr<AutotuneResult> GpuConvAlgorithmPicker::PickBestAlgorithm(
   return result_or;
 }
 
-// The following function allows deterministic ops to be implemented relatively
-// quickly using environment variables. It is intended to be temporary. The
-// longer-term intention is to enable deterministic ops via tf.config and
-// appropriate plumbing. See the discussion on PR 34951 for more information:
-// https://github.com/tensorflow/tensorflow/pull/34951#discussion_r355682316
-// This function and associated comment are replicated in the following three
-// places:
-//   1. tensorflow/compiler/xla/service/gpu/gpu_conv_algorithm_picker.cc
-//   2. tensorflow/core/kernels/gpu_utils.cc
-//   3. tensorflow/stream_executor/cuda/cuda_dnn.cc
-// When implementing the plumbing, you should also search for the use of
-// TF_DETERMINISTIC_OPS on its own.
-// TODO(duncanriach): move to an API that uses tf.config and implement the first
-//                    phase of plumbing.
-static bool RequireCudnnDeterminism() {
-  static bool require_cudnn_determinism = [] {
-    bool deterministic_ops = false;
-    TF_CHECK_OK(tensorflow::ReadBoolFromEnvVar("TF_DETERMINISTIC_OPS",
-                                               /*default_val=*/false,
-                                               &deterministic_ops));
-    bool cudnn_deterministic = false;
-    TF_CHECK_OK(tensorflow::ReadBoolFromEnvVar("TF_CUDNN_DETERMINISTIC",
-                                               /*default_val=*/false,
-                                               &cudnn_deterministic));
-    return deterministic_ops || cudnn_deterministic;
-  }();
-  return require_cudnn_determinism;
-}
-
+#if (defined(GOOGLE_CUDA) && GOOGLE_CUDA)
 StatusOr<tensorflow::AutotuneResult>
 GpuConvAlgorithmPicker::PickBestAlgorithmNoCacheCuda(
     const HloCustomCallInstruction* instr, se::DeviceMemoryAllocator* allocator,
@@ -376,8 +352,8 @@ GpuConvAlgorithmPicker::PickBestAlgorithmNoCacheCuda(
   const HloModuleConfig& hlo_module_config = instr->GetModule()->config();
   const int32 conv_autotune_level =
       hlo_module_config.debug_options().xla_gpu_autotune_level();
-  const bool init_conv_data = conv_autotune_level > 1;
-  const bool check_conv = conv_autotune_level > 3;
+  const bool init_conv_data = conv_autotune_level >= 2;
+  const bool check_conv = conv_autotune_level >= 4;
   const auto initialize_buffer = [init_conv_data, &stream, &rng_state](
                                      DeviceMemoryBase buffer,
                                      const Shape& buffer_shape) {
@@ -429,27 +405,28 @@ GpuConvAlgorithmPicker::PickBestAlgorithmNoCacheCuda(
     (void)blas->GetVersion(&blas_version);
   }
 
-  absl::Span<const AlgorithmDesc> blacklisted_algos =
-      GetBlacklistedConvAlgorithms(GetComputeCapability(stream_exec_),
-                                   GetCudnnVersion(stream_exec_), blas_version,
-                                   canonical_hlo);
+  absl::Span<const AlgorithmDesc> disabled_algos = GetDisabledConvAlgorithms(
+      GetComputeCapability(stream_exec_), GetCudnnVersion(stream_exec_),
+      blas_version, canonical_hlo);
+
+  TF_ASSIGN_OR_RETURN(GpuConvConfig config, GetGpuConvConfig(instr));
 
   for (const AlgorithmDesc& alg : GetAlgorithms(kind, stream_exec_)) {
     XLA_SCOPED_LOGGING_TIMER_LEVEL(
         absl::StrCat("CudnnConvAlgorithmPicker::PickBestAlgorithm algo ",
-                     AlgorithmToString(alg)),
+                     alg.ToString()),
         2);
 
-    if (absl::c_linear_search(blacklisted_algos, alg)) {
-      LOG(INFO) << "Omitted potentially buggy algorithm "
-                << AlgorithmToString(alg) << " for conv " << instr->ToString();
+    if (absl::c_linear_search(disabled_algos, alg)) {
+      LOG(INFO) << "Omitted potentially buggy algorithm " << alg.ToString()
+                << " for conv " << instr->ToString();
       continue;
     }
 
     se::RedzoneAllocator scratch_allocator(
         stream, allocator, PtxOptsFromConfig(hlo_module_config));
     se::dnn::ProfileResult profile_result;
-    VLOG(3) << "Trying algorithm " << AlgorithmToString(alg) << " for "
+    VLOG(3) << "Trying algorithm " << alg.ToString() << " for "
             << instr->ToString();
 
     // Use assignment instead of brace-list to make GCC 4.9 happy.
@@ -457,7 +434,7 @@ GpuConvAlgorithmPicker::PickBestAlgorithmNoCacheCuda(
     options.profile_result = &profile_result;
     options.algo_override = alg;
     Status launch_status =
-        RunGpuConv(instr, absl::MakeSpan(operand_buffers), result_buffer,
+        RunGpuConv(config, absl::MakeSpan(operand_buffers), result_buffer,
                    &scratch_allocator, stream, options);
 
     if (!launch_status.ok()) {
@@ -494,7 +471,7 @@ GpuConvAlgorithmPicker::PickBestAlgorithmNoCacheCuda(
 
     if (!input_output_allocator_redzone_clear ||
         !scratch_allocator_redzone_clear) {
-      AlgorithmBlacklist proto;
+      AlgorithmDenylist proto;
       auto entry = proto.add_entries();
       entry->set_hlo(canonical_hlo);
       *entry->mutable_cc() = GetComputeCapability(stream_exec_);
@@ -504,13 +481,12 @@ GpuConvAlgorithmPicker::PickBestAlgorithmNoCacheCuda(
       algo->set_id(alg.algo_id());
       algo->set_tensor_ops(alg.tensor_ops_enabled());
 
-      LOG(ERROR)
-          << "To blacklist this algorithm for this convolution, "
-             "copy-paste the following "
-             "proto to the blacklist file pointed by XLA_FLAGS "
-             "--xla_gpu_algorithm_blacklist_path="
-          << GetDebugOptionsFromFlags().xla_gpu_algorithm_blacklist_path()
-          << " : " << proto.ShortDebugString();
+      LOG(ERROR) << "To denylist this algorithm for this convolution, "
+                    "copy-paste the following "
+                    "proto to the denylist file pointed by XLA_FLAGS "
+                    "--xla_gpu_algorithm_denylist_path="
+                 << GetDebugOptionsFromFlags().xla_gpu_algorithm_denylist_path()
+                 << " : " << proto.ShortDebugString();
       continue;
     }
 
@@ -519,8 +495,8 @@ GpuConvAlgorithmPicker::PickBestAlgorithmNoCacheCuda(
       StatusOr<bool> compare_result = comparator->CompareEqual(
           stream, reference_result_buffer, result_buffer);
       if (!compare_result.ok()) {
-        LOG(ERROR) << "Unable to compare " << AlgorithmToString(first_algorithm)
-                   << " against " << AlgorithmToString(alg) << " for "
+        LOG(ERROR) << "Unable to compare " << first_algorithm.ToString()
+                   << " against " << alg.ToString() << " for "
                    << instr->ToString() << ": " << compare_result.status();
         if (compare_result.status().code() ==
             tensorflow::error::RESOURCE_EXHAUSTED) {
@@ -532,9 +508,8 @@ GpuConvAlgorithmPicker::PickBestAlgorithmNoCacheCuda(
         LOG(ERROR)
             << "Results mismatch between different convolution algorithms. "
                "This is likely a bug/unexpected loss of precision in cudnn.\n"
-            << instr->ToString() << " for "
-            << AlgorithmToString(first_algorithm) << " vs "
-            << AlgorithmToString(alg);
+            << instr->ToString() << " for " << first_algorithm.ToString()
+            << " vs " << alg.ToString();
         PrintPlatformInfo(stream);
         VLOG(1) << "Full module on failure: \n"
                 << instr->GetModule()->ToString();
@@ -598,42 +573,11 @@ GpuConvAlgorithmPicker::PickBestAlgorithmNoCacheCuda(
     }
   }
 
-  // Choose the fastest convolution that doesn't produce a REDZONE_MODIFIED
-  // error.
-  //
-  // TODO(jlebar): We ought to be able to detect redzone reads by noticing NaNs
-  // in the output of the conv and skip those.
-  //
-  // For now, we ignore WRONG_RESULT failures because false-positives are
-  // possible (e.g. perhaps the reference algorithm is the one that's
-  // incorrect!).  But we don't ignore REDZONE_MODIFIED failures because they're
-  // quite severe and can be detected with high accuracy.
-  std::vector<AutotuneResult> filtered_results;
-  absl::c_copy_if(
-      profile_results, std::back_inserter(filtered_results),
-      [](const AutotuneResult& r) {
-        return !(r.has_failure() &&
-                 r.failure().kind() != AutotuneResult::WRONG_RESULT);
-      });
-  if (filtered_results.empty()) {
-    return InternalError(
-        "All algorithms tried for convolution %s failed. Falling back to "
-        "default algorithm. ",
-        instr->ToString());
-  }
-
-  auto selected_result = filtered_results.begin();
-  if (!RequireCudnnDeterminism()) {
-    selected_result = absl::c_min_element(
-        filtered_results,
-        [](const AutotuneResult& lhs, const AutotuneResult& rhs) {
-          return tensorflow::proto_utils::FromDurationProto(lhs.run_time()) <
-                 tensorflow::proto_utils::FromDurationProto(rhs.run_time());
-        });
-  }
-
-  return *selected_result;
+  TF_ASSIGN_OR_RETURN(AutotuneResult selected_algorithm,
+                      PickBestResult(profile_results, *instr));
+  return selected_algorithm;
 }
+#endif
 
 StatusOr<tensorflow::AutotuneResult>
 GpuConvAlgorithmPicker::PickBestAlgorithmNoCacheRocm(
@@ -671,9 +615,12 @@ GpuConvAlgorithmPicker::PickBestAlgorithmNoCacheRocm(
           ShapeUtil::ByteSizeOf(instr->shape().tuple_shapes(0))));
   initialize_buffer(result_buffer);
 
-  TF_ASSIGN_OR_RETURN(std::vector<se::dnn::ProfileResult> algorithms,
-                      GetAlgorithms(instr, absl::MakeSpan(operand_buffers),
-                                    result_buffer, stream_exec_, stream));
+  ScratchAllocator scratch_allocator(device_ordinal, allocator);
+
+  TF_ASSIGN_OR_RETURN(
+      std::vector<se::dnn::ProfileResult> algorithms,
+      GetMIOpenAlgorithms(instr, absl::MakeSpan(operand_buffers), result_buffer,
+                          stream_exec_, &scratch_allocator, stream));
 
   std::vector<AutotuneResult> profile_results;
 
@@ -689,24 +636,25 @@ GpuConvAlgorithmPicker::PickBestAlgorithmNoCacheRocm(
     *result.mutable_run_time() = tensorflow::proto_utils::ToDurationProto(
         absl::Milliseconds(profile_result.elapsed_time_in_ms()));
   } else {
+    TF_ASSIGN_OR_RETURN(GpuConvConfig config, GetGpuConvConfig(instr));
     for (const auto& miopen_alg : algorithms) {
       const auto& alg = miopen_alg.algorithm();
       XLA_SCOPED_LOGGING_TIMER_LEVEL(
           absl::StrCat("CudnnConvAlgorithmPicker::PickBestAlgorithm algo ",
-                       AlgorithmToString(alg)),
+                       alg.ToString()),
           2);
 
-      ScratchAllocator scratch_allocator(device_ordinal, allocator);
       se::dnn::ProfileResult profile_result;
-      VLOG(3) << "Trying algorithm " << AlgorithmToString(alg) << " for "
+      VLOG(3) << "Trying algorithm " << alg.ToString() << " for "
               << instr->ToString();
 
       // Use assignment instead of brace-list to make GCC 4.9 happy.
       RunConvOptions options;
       options.profile_result = &profile_result;
       options.algo_override = alg;
+      options.scratch_size_override = miopen_alg.scratch_size();
       Status launch_status =
-          RunGpuConv(instr, absl::MakeSpan(operand_buffers), result_buffer,
+          RunGpuConv(config, absl::MakeSpan(operand_buffers), result_buffer,
                      &scratch_allocator, stream, options);
 
       if (!launch_status.ok()) {
@@ -728,21 +676,10 @@ GpuConvAlgorithmPicker::PickBestAlgorithmNoCacheRocm(
           absl::Milliseconds(profile_result.elapsed_time_in_ms()));
     }
   }
-  const auto& best_result = absl::c_min_element(
-      profile_results,
-      [&](const AutotuneResult& lhs, const AutotuneResult& rhs) {
-        return tensorflow::proto_utils::FromDurationProto(lhs.run_time()) <
-               tensorflow::proto_utils::FromDurationProto(rhs.run_time());
-      });
 
-  if (best_result != profile_results.end()) {
-    return *best_result;
-  }
-
-  return InternalError(
-      "All algorithms tried for convolution %s failed.  Falling back to "
-      "default algorithm.",
-      instr->ToString());
+  TF_ASSIGN_OR_RETURN(AutotuneResult selected_algorithm,
+                      PickBestResult(profile_results, *instr));
+  return selected_algorithm;
 }
 
 StatusOr<bool> GpuConvAlgorithmPicker::RunOnInstruction(HloInstruction* instr) {

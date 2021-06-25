@@ -13,19 +13,20 @@
 # limitations under the License.
 # ==============================================================================
 # pylint: disable=invalid-name
-"""VGG16 model for Keras."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
+"""VGG16 model for Keras.
 
-import os
+Reference:
+  - [Very Deep Convolutional Networks for Large-Scale Image Recognition]
+    (https://arxiv.org/abs/1409.1556) (ICLR 2015)
+"""
 
 from tensorflow.python.keras import backend
-from tensorflow.python.keras import layers
 from tensorflow.python.keras.applications import imagenet_utils
 from tensorflow.python.keras.engine import training
+from tensorflow.python.keras.layers import VersionAwareLayers
 from tensorflow.python.keras.utils import data_utils
 from tensorflow.python.keras.utils import layer_utils
+from tensorflow.python.lib.io import file_io
 from tensorflow.python.util.tf_export import keras_export
 
 
@@ -35,26 +36,42 @@ WEIGHTS_PATH_NO_TOP = ('https://storage.googleapis.com/tensorflow/'
                        'keras-applications/vgg16/'
                        'vgg16_weights_tf_dim_ordering_tf_kernels_notop.h5')
 
+layers = VersionAwareLayers()
+
 
 @keras_export('keras.applications.vgg16.VGG16', 'keras.applications.VGG16')
-def VGG16(include_top=True,
-          weights='imagenet',
-          input_tensor=None,
-          input_shape=None,
-          pooling=None,
-          classes=1000):
+def VGG16(
+    include_top=True,
+    weights='imagenet',
+    input_tensor=None,
+    input_shape=None,
+    pooling=None,
+    classes=1000,
+    classifier_activation='softmax'):
   """Instantiates the VGG16 model.
 
-  By default, it loads weights pre-trained on ImageNet. Check 'weights' for
-  other options.
+  Reference:
+  - [Very Deep Convolutional Networks for Large-Scale Image Recognition](
+  https://arxiv.org/abs/1409.1556) (ICLR 2015)
 
-  This model can be built both with 'channels_first' data format
-  (channels, height, width) or 'channels_last' data format
-  (height, width, channels).
+  For image classification use cases, see
+  [this page for detailed examples](
+    https://keras.io/api/applications/#usage-examples-for-image-classification-models).
+
+  For transfer learning use cases, make sure to read the
+  [guide to transfer learning & fine-tuning](
+    https://keras.io/guides/transfer_learning/).
 
   The default input size for this model is 224x224.
 
-  Arguments:
+  Note: each Keras Application expects a specific kind of input preprocessing.
+  For VGG16, call `tf.keras.applications.vgg16.preprocess_input` on your
+  inputs before passing them to the model.
+  `vgg16.preprocess_input` will convert the input images from RGB to BGR,
+  then will zero-center each color channel with respect to the ImageNet dataset,
+  without scaling.
+
+  Args:
       include_top: whether to include the 3 fully-connected
           layers at the top of the network.
       weights: one of `None` (random initialization),
@@ -85,15 +102,16 @@ def VGG16(include_top=True,
       classes: optional number of classes to classify images
           into, only to be specified if `include_top` is True, and
           if no `weights` argument is specified.
+      classifier_activation: A `str` or callable. The activation function to use
+          on the "top" layer. Ignored unless `include_top=True`. Set
+          `classifier_activation=None` to return the logits of the "top" layer.
+          When loading pretrained weights, `classifier_activation` can only
+          be `None` or `"softmax"`.
 
   Returns:
-      A Keras model instance.
-
-  Raises:
-      ValueError: in case of invalid argument for `weights`,
-          or invalid input shape.
+    A `keras.Model` instance.
   """
-  if not (weights in {'imagenet', None} or os.path.exists(weights)):
+  if not (weights in {'imagenet', None} or file_io.file_exists_v2(weights)):
     raise ValueError('The `weights` argument should be either '
                      '`None` (random initialization), `imagenet` '
                      '(pre-training on ImageNet), '
@@ -165,7 +183,10 @@ def VGG16(include_top=True,
     x = layers.Flatten(name='flatten')(x)
     x = layers.Dense(4096, activation='relu', name='fc1')(x)
     x = layers.Dense(4096, activation='relu', name='fc2')(x)
-    x = layers.Dense(classes, activation='softmax', name='predictions')(x)
+
+    imagenet_utils.validate_activation(classifier_activation, weights)
+    x = layers.Dense(classes, activation=classifier_activation,
+                     name='predictions')(x)
   else:
     if pooling == 'avg':
       x = layers.GlobalAveragePooling2D()(x)
@@ -204,12 +225,17 @@ def VGG16(include_top=True,
 
 @keras_export('keras.applications.vgg16.preprocess_input')
 def preprocess_input(x, data_format=None):
-  """Preprocesses the input (encoding a batch of images) to the VGG16 model."""
   return imagenet_utils.preprocess_input(
       x, data_format=data_format, mode='caffe')
 
 
 @keras_export('keras.applications.vgg16.decode_predictions')
 def decode_predictions(preds, top=5):
-  """Decodes the prediction result from the VGG16 model."""
   return imagenet_utils.decode_predictions(preds, top=top)
+
+
+preprocess_input.__doc__ = imagenet_utils.PREPROCESS_INPUT_DOC.format(
+    mode='',
+    ret=imagenet_utils.PREPROCESS_INPUT_RET_DOC_CAFFE,
+    error=imagenet_utils.PREPROCESS_INPUT_ERROR_DOC)
+decode_predictions.__doc__ = imagenet_utils.decode_predictions.__doc__

@@ -284,7 +284,7 @@ def _aggregate_across_replicas(metrics_collections, metric_value_fn, *args):
     if hasattr(distribution.extended, '_outer_control_flow_context'):
       # If there was an outer context captured before this method was called,
       # then we enter that context to create the metric value op. If the
-      # caputred context is `None`, ops.control_dependencies(None) gives the
+      # captured context is `None`, ops.control_dependencies(None) gives the
       # desired behavior. Else we use `Enter` and `Exit` to enter and exit the
       # captured context.
       # This special handling is needed because sometimes the metric is created
@@ -442,6 +442,97 @@ def accuracy(labels,
       either `metrics_collections` or `updates_collections` are not a list or
       tuple.
     RuntimeError: If eager execution is enabled.
+
+  @compatibility(TF2)
+  `tf.compat.v1.metrics.accuracy` is not compatible with eager
+  execution and `tf.function`.
+  Please use `tf.keras.metrics.Accuracy` instead for TF2 migration. After
+  instantiating a `tf.keras.metrics.Accuracy` object, you can first call the
+  `update_state()` method to record the prediction/labels, and then call the
+  `result()` method to get the accuracy eagerly. You can also attach it to a
+  Keras model when calling the `compile` method. Please refer to [this
+  guide](https://www.tensorflow.org/guide/migrate#new-style_metrics_and_losses)
+  for more details.
+
+  #### Structural Mapping to Native TF2
+
+  Before:
+
+  ```python
+  accuracy, update_op = tf.compat.v1.metrics.accuracy(
+    labels=labels,
+    predictions=predictions,
+    weights=weights,
+    metrics_collections=metrics_collections,
+    update_collections=update_collections,
+    name=name)
+  ```
+
+  After:
+
+  ```python
+   m = tf.keras.metrics.Accuracy(
+     name=name,
+     dtype=None)
+
+   m.update_state(
+   y_true=labels,
+   y_pred=predictions,
+   sample_weight=weights)
+
+   accuracy = m.result()
+  ```
+
+  #### How to Map Arguments
+
+  | TF1 Arg Name          | TF2 Arg Name    | Note                       |
+  | :-------------------- | :-------------- | :------------------------- |
+  | `label`               | `y_true`        | In `update_state()` method |
+  | `predictions`         | `y_true`        | In `update_state()` method |
+  | `weights`             | `sample_weight` | In `update_state()` method |
+  | `metrics_collections` | Not supported   | Metrics should be tracked  :
+  :                       :                 : explicitly or with Keras   :
+  :                       :                 : APIs, for example,         :
+  :                       :                 : [add_metric][add_metric],  :
+  :                       :                 : instead of via collections :
+  | `updates_collections` | Not supported   | -                          |
+  | `name`                | `name`          | In constructor             |
+
+  [add_metric]:https//www.tensorflow.org/api_docs/python/tf/keras/layers/Layer#add_metric
+
+
+  #### Before & After Usage Example
+
+  Before:
+
+  >>> g = tf.Graph()
+  >>> with g.as_default():
+  ...   logits = [1, 2, 3]
+  ...   labels = [0, 2, 3]
+  ...   acc, acc_op = tf.compat.v1.metrics.accuracy(logits, labels)
+  ...   global_init = tf.compat.v1.global_variables_initializer()
+  ...   local_init = tf.compat.v1.local_variables_initializer()
+  >>> sess = tf.compat.v1.Session(graph=g)
+  >>> sess.run([global_init, local_init])
+  >>> print(sess.run([acc, acc_op]))
+  [0.0, 0.66667]
+
+
+  After:
+
+  >>> m = tf.keras.metrics.Accuracy()
+  >>> m.update_state([1, 2, 3], [0, 2, 3])
+  >>> m.result().numpy()
+  0.66667
+
+  ```python
+  # Used within Keras model
+  model.compile(optimizer='sgd',
+                loss='mse',
+                metrics=[tf.keras.metrics.Accuracy()])
+  ```
+
+  @end_compatibility
   """
   if context.executing_eagerly():
     raise RuntimeError('tf.metrics.accuracy is not supported when eager '
@@ -629,7 +720,7 @@ def _aggregate_variable(v, collections):
 @tf_export(v1=['metrics.auc'])
 @deprecated(None,
             'The value of AUC returned by this may race with the update so '
-            'this is deprected. Please use tf.keras.metrics.AUC instead.')
+            'this is deprecated. Please use tf.keras.metrics.AUC instead.')
 def auc(labels,
         predictions,
         weights=None,

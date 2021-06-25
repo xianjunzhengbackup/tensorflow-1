@@ -17,7 +17,6 @@ limitations under the License.
 #define TENSORFLOW_CORE_KERNELS_EIGEN_CUBOID_CONVOLUTION_H_
 
 #include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
-#include "tensorflow/core/kernels/eigen_volume_patch.h"
 
 #if defined(TENSORFLOW_USE_CUSTOM_CONTRACTION_KERNEL)
 #include "tensorflow/core/kernels/eigen_contraction_kernel.h"
@@ -25,10 +24,17 @@ limitations under the License.
 
 #include "tensorflow/core/kernels/eigen_convolution_helpers.h"
 
+#if defined(EIGEN_VECTORIZE_ALTIVEC) || defined(EIGEN_VECTORIZE_VSX)
+#define TF_USE_CUSTOM_EIGEN_PACK 0
+#else
+#define TF_USE_CUSTOM_EIGEN_PACK 1
+#endif
+
 namespace Eigen {
 
 namespace internal {
 
+#if TF_USE_CUSTOM_EIGEN_PACK
 // WARNING: Most of the code here implicitly assumes that the matrix is in
 // ColMajor layout. This is guaranteed by the tensor contraction (see
 // TensorContraction.h).
@@ -457,7 +463,7 @@ class TensorContractionInputMapper<
   // 'partial' packet, the elements corresponding to the row (specified through
   // rowOffset) are loaded and the rest of the elements are zero-filled into the
   // 'partial' packet. This function is called from
-  // loadPacketStandardFromSingleColumnTwoRows(). This code path is exercied
+  // loadPacketStandardFromSingleColumnTwoRows(). This code path is exercised
   // only when the packet type supports masked load and when the partial packet
   // load is available in the TensorEvaluator.
   EIGEN_DEVICE_FUNC
@@ -584,7 +590,7 @@ class TensorContractionInputMapper<
   // Load standard packet from a patch specified by the "within patch offset"
   // (patchId) and the precomputed indices of the first element of the patch.
   // This function will be called if partial packet loading is not available
-  // for the TesnorEvaluator or if the packet type does not support masked
+  // for the TensorEvaluator or if the packet type does not support masked
   // load.
   template <typename PacketT, typename TensorEvaluatorT>
   EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE typename std::enable_if<
@@ -645,7 +651,7 @@ class TensorContractionInputMapper<
   // Load standard packet from a patch specified by the "within patch offset"
   // (patchId) and the precomputed indices of the first element of the patch.
   // This function will be called if partial packet loading is available for
-  // the TesnorEvaluator and if the packet type supports masked load.
+  // the TensorEvaluator and if the packet type supports masked load.
   // The only difference between this and the other case is that if the packet
   // to load is split across two rows (but in same column), then in this case
   // instead of going to the slow (element-by-element) load, we load two packets
@@ -1625,6 +1631,7 @@ struct gemm_pack_rhs<
     }
   }
 };
+#endif
 
 #if defined(TENSORFLOW_USE_CUSTOM_CONTRACTION_KERNEL)
 // Pack a block of the right input matrix (in our case it's always a "virtual

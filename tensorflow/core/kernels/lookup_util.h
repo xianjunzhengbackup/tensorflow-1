@@ -21,6 +21,12 @@ limitations under the License.
 #include "tensorflow/core/kernels/initializable_lookup_table.h"
 
 namespace tensorflow {
+namespace data {
+class DatasetBase;
+}  // namespace data
+}  // namespace tensorflow
+
+namespace tensorflow {
 namespace lookup {
 
 // Gets the LookupTable stored in the ctx->resource_manager() with key
@@ -45,10 +51,19 @@ Status GetInitializableLookupTable(StringPiece input_name, OpKernelContext* ctx,
 Status CheckTableDataTypes(const LookupInterface& table, DataType key_dtype,
                            DataType value_dtype, const string& table_name);
 
+// Initializes `table` from `filename`.
 Status InitializeTableFromTextFile(const string& filename, int64 vocab_size,
                                    char delimiter, int32 key_index,
-                                   int32 value_index, Env* env,
+                                   int32 value_index, int64 offset, Env* env,
                                    InitializableLookupTable* table);
+
+// Initializes `table` from `filename`. `func` may specify how to represent the
+// initializer as a graphdef, so that the table can be serialized as metadata.
+Status InitializeTableFromTextFile(
+    const string& filename, int64 vocab_size, char delimiter, int32 key_index,
+    int32 value_index, int64 offset, Env* env,
+    std::unique_ptr<InitializableLookupTable::InitializerSerializer> serializer,
+    InitializableLookupTable* table);
 
 }  // namespace lookup
 }  // namespace tensorflow

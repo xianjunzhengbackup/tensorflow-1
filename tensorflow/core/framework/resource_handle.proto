@@ -40,4 +40,6 @@ message ResourceHandleProto {
 
   // Data types and shapes for the underlying resource.
   repeated DtypeAndShape dtypes_and_shapes = 6;
+
+  reserved 7;
 }

@@ -24,7 +24,7 @@ limitations under the License.
 #include "tensorflow/core/distributed_runtime/tensor_coding.h"
 #include "tensorflow/core/distributed_runtime/worker_session.h"
 #include "tensorflow/core/platform/tracing.h"
-#include "tensorflow/core/profiler/lib/profiler_session.h"
+#include "tensorflow/core/profiler/lib/device_profiler_session.h"
 
 namespace tensorflow {
 
@@ -35,10 +35,10 @@ Worker::Worker(WorkerEnv* env) : env_(env), recent_request_ids_(100000) {
   StatusGroup::ConfigureLogHistory();
 }
 
-void Worker::GetStatusAsync(const GetStatusRequest* request,
+void Worker::GetStatusAsync(CallOptions* opts, const GetStatusRequest* request,
                             GetStatusResponse* response, bool fail_fast,
                             StatusCallback done) {
-  DeviceMgr* dm = env_->device_mgr;
+  const DeviceMgr* dm = env_->device_mgr;
   std::vector<DeviceAttributes> devices;
   dm->ListDeviceAttributes(&devices);
   response->mutable_device_attributes()->Reserve(devices.size());
@@ -53,7 +53,8 @@ void Worker::CreateWorkerSessionAsync(const CreateWorkerSessionRequest* request,
                                       StatusCallback done) {
   Status s = env_->session_mgr->CreateSession(
       request->session_handle(), request->server_def(),
-      request->cluster_device_attributes(), request->isolate_session_state());
+      request->cluster_device_attributes(), request->isolate_session_state(),
+      request->master_task(), request->master_incarnation());
   done(s);
 }
 
@@ -194,10 +195,10 @@ void Worker::DoRunGraph(CallOptions* opts, RunGraphRequestWrapper* request,
       request->exec_opts().record_costs()) {
     collector = new StepStatsCollector(response->mutable_step_stats());
   }
-  ProfilerSession* profiler_session = nullptr;
+  DeviceProfilerSession* device_profiler_session = nullptr;
   if (collector && request->exec_opts().record_timeline()) {
     // If timeline was requested, assume we want hardware level tracing.
-    profiler_session = ProfilerSession::Create().release();
+    device_profiler_session = DeviceProfilerSession::Create().release();
   }
   CancellationManager* cm = new CancellationManager;
   opts->SetCancelCallback([this, cm, step_id]() {
@@ -213,7 +214,7 @@ void Worker::DoRunGraph(CallOptions* opts, RunGraphRequestWrapper* request,
     opts->ClearCancelCallback();
     delete cm;
     delete collector;
-    delete profiler_session;
+    delete device_profiler_session;
     delete out;
     done(errors::Aborted("Call was aborted"));
     return;
@@ -222,7 +223,7 @@ void Worker::DoRunGraph(CallOptions* opts, RunGraphRequestWrapper* request,
       request->graph_handle(), step_id, session.get(), request->exec_opts(),
       collector, response, cm, in,
       [this, step_id, response, session, cm, out, token, collector,
-       profiler_session, opts, done](const Status& status) {
+       device_profiler_session, opts, done](const Status& status) {
         Status s = status;
         if (s.ok()) {
           s = session->graph_mgr()->RecvOutputs(step_id, out);
@@ -232,10 +233,9 @@ void Worker::DoRunGraph(CallOptions* opts, RunGraphRequestWrapper* request,
         cancellation_manager_.DeregisterCallback(token);
         delete cm;
 
-        if (profiler_session) {
-          RunMetadata run_metadata;
-          profiler_session->CollectData(&run_metadata).IgnoreError();
-          response->mutable_step_stats()->MergeFrom(run_metadata.step_stats());
+        if (device_profiler_session) {
+          device_profiler_session->CollectData(response->mutable_step_stats())
+              .IgnoreError();
         }
 
         if (s.ok()) {
@@ -248,7 +248,7 @@ void Worker::DoRunGraph(CallOptions* opts, RunGraphRequestWrapper* request,
 
         if (collector) collector->Finalize();
         delete collector;
-        delete profiler_session;
+        delete device_profiler_session;
         delete out;
         done(s);
       });

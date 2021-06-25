@@ -18,9 +18,78 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+from typing import Union
+
 from tensorflow.python.eager import context
+from tensorflow.python.util import _pywrap_tensor_float_32_execution
 from tensorflow.python.util import deprecation
 from tensorflow.python.util.tf_export import tf_export
+
+
+@tf_export('config.experimental.tensor_float_32_execution_enabled')
+def tensor_float_32_execution_enabled():
+  """Returns whether TensorFloat-32 is enabled.
+
+  By default, TensorFloat-32 is enabled, but this can be changed with
+  `tf.config.experimental.enable_tensor_float_32_execution`.
+
+  Returns:
+    True if TensorFloat-32 is enabled (the default) and False otherwise
+  """
+  return _pywrap_tensor_float_32_execution.is_enabled()
+
+
+@tf_export('config.experimental.enable_tensor_float_32_execution')
+def enable_tensor_float_32_execution(enabled):
+  """Enable or disable the use of TensorFloat-32 on supported hardware.
+
+  [TensorFloat-32](https://blogs.nvidia.com/blog/2020/05/14/tensorfloat-32-precision-format),
+  or TF32 for short, is a math mode for NVIDIA Ampere GPUs. TensorFloat-32
+  execution causes certain float32 ops, such as matrix multiplications and
+  convolutions, to run much faster on Ampere GPUs but with reduced precision.
+  This reduced precision should not impact convergence of deep learning models
+  in practice.
+
+  TensorFloat-32 is enabled by default. TensorFloat-32 is only supported on
+  Ampere GPUs, so all other hardware will use the full float32 precision
+  regardless of whether TensorFloat-32 is enabled or not. If you want to use the
+  full float32 precision on Ampere, you can disable TensorFloat-32 execution
+  with this function. For example:
+
+  ```python
+  x = tf.fill((2, 2), 1.0001)
+  y = tf.fill((2, 2), 1.)
+  # TensorFloat-32 is enabled, so matmul is run with reduced precision
+  print(tf.linalg.matmul(x, y))  # [[2., 2.], [2., 2.]]
+  tf.config.experimental.enable_tensor_float_32_execution(False)
+  # Matmul is run with full precision
+  print(tf.linalg.matmul(x, y))  # [[2.0002, 2.0002], [2.0002, 2.0002]]
+  ```
+
+  To check whether TensorFloat-32 execution is currently enabled, use
+  `tf.config.experimental.tensor_float_32_execution_enabled`.
+
+  If TensorFloat-32 is enabled, float32 inputs of supported ops, such as
+  `tf.linalg.matmul`, will be rounded from 23 bits of precision to 10 bits of
+  precision in most cases. This allows the ops to execute much faster by
+  utilizing the GPU's tensor cores. TensorFloat-32 has the same dynamic range as
+  float32, meaning it is no more likely to underflow or overflow than float32.
+  Ops still use float32 accumulation when TensorFloat-32 is enabled. Enabling or
+  disabling TensorFloat-32 only affects Ampere GPUs and subsequent GPUs that
+  support TensorFloat-32.
+
+  Note TensorFloat-32 is not always used in supported ops, as only inputs of
+  certain shapes are supported. Support for more input shapes and more ops may
+  be added in the future. As a result, precision of float32 ops may decrease in
+  minor versions of TensorFlow.
+
+  TensorFloat-32 is also used for some complex64 ops. Currently, TensorFloat-32
+  is used in fewer cases for complex64 as it is for float32.
+
+  Args:
+    enabled: Bool indicating whether to enable TensorFloat-32 execution.
+  """
+  _pywrap_tensor_float_32_execution.enable(enabled)
 
 
 @tf_export('config.threading.get_intra_op_parallelism_threads')
@@ -78,31 +147,43 @@ def set_inter_op_parallelism_threads(num_threads):
 
 
 @tf_export('config.optimizer.get_jit')
-def get_optimizer_jit():
-  """Get if JIT compilation is enabled.
+def get_optimizer_jit() -> str:
+  """Returns JIT compilation configuration for code inside `tf.function`.
 
-  Note that optimizations are only applied to code that is compiled into a
-  graph. In eager mode, which is the TF2 API default, that means only code that
-  is defined under a tf.function decorator.
-
-  Returns:
-    If JIT compilation is enabled.
+  Possible return values:
+     -`"autoclustering"` if
+     [autoclustering](https://www.tensorflow.org/xla#auto-clustering) is enabled
+     - `""` when no default compilation is applied.
   """
-  return context.context().optimizer_jit
+  if context.context().optimizer_jit:
+    return 'autoclustering'
+  return ''
 
 
 @tf_export('config.optimizer.set_jit')
-def set_optimizer_jit(enabled):
-  """Set if JIT compilation is enabled.
+@deprecation.deprecated_arg_values(
+    None,
+    '`True` setting is deprecated, use `autoclustering` instead.',
+    warn_once=True,
+    jit_config=True)
+def set_optimizer_jit(enabled: Union[bool, str]):
+  """Configure JIT compilation.
 
-  Note that optimizations are only applied to code that is compiled into a
-  graph. In eager mode, which is the TF2 API default, that means only code that
-  is defined under a tf.function decorator.
+  Note: compilation is only applied to code that is compiled into a
+  graph (in TF2 that's only a code inside `tf.function`).
 
   Args:
-    enabled: Whether to enable JIT compilation.
+    enabled: JIT compilation configuration.
+    Possible values:
+     - `"autoclustering"` (`True` is a deprecated alias): perform
+     [autoclustering](https://www.tensorflow.org/xla#auto-clustering)
+       (automatically identify and compile clusters of nodes) on all graphs
+       using
+     [XLA](https://www.tensorflow.org/xla).
+     - `False`: do not automatically compile any graphs.
   """
-  context.context().optimizer_jit = enabled
+  autoclustering_enabled = enabled in (True, 'autoclustering')
+  context.context().optimizer_jit = autoclustering_enabled
 
 
 @tf_export('config.optimizer.get_experimental_options')
@@ -131,11 +212,10 @@ def set_optimizer_experimental_options(options):
   Args:
     options: Dictionary of experimental optimizer options to configure.
       Valid keys:
-      - layout_optimizer: Optimize tensor layouts
-        e.g. This will try to use NCHW layout on GPU which is faster.
-      - constant_folding: Fold constants
-        Statically infer the value of tensors when possible, and materialize the
-        result using constants.
+      - layout_optimizer: Optimize tensor layouts e.g. This will try to use NCHW
+        layout on GPU which is faster.
+      - constant_folding: Fold constants Statically infer the value of tensors
+        when possible, and materialize the result using constants.
       - shape_optimization: Simplify computations made on shapes.
       - remapping: Remap subgraphs onto more efficient implementations.
       - arithmetic_optimization: Simplify arithmetic ops with common
@@ -236,14 +316,14 @@ def set_device_policy(device_policy):
     device_policy: A device policy.
       Valid values:
       - None: Switch to a system default.
-      - 'warn': Copies the tensors which are not on the right device and logs
-          a warning.
+      - 'warn': Copies the tensors which are not on the right device and logs a
+        warning.
       - 'explicit': Raises an error if the placement is not as required.
       - 'silent': Silently copies the tensors. Note that this may hide
-          performance problems as there is no notification provided when
-          operations are blocked on the tensor being copied between devices.
+        performance problems as there is no notification provided when
+        operations are blocked on the tensor being copied between devices.
       - 'silent_for_int32': silently copies `int32` tensors, raising errors on
-          the other ones.
+        the other ones.
 
   Raises:
       ValueError: If an invalid `device_policy` is passed.
@@ -302,8 +382,7 @@ def set_synchronous_execution(enable):
 
 @tf_export('config.list_physical_devices',
            'config.experimental.list_physical_devices')
-@deprecation.deprecated_endpoints(
-    'config.experimental.list_physical_devices')
+@deprecation.deprecated_endpoints('config.experimental.list_physical_devices')
 def list_physical_devices(device_type=None):
   """Return a list of physical devices visible to the host runtime.
 
@@ -337,8 +416,7 @@ def list_physical_devices(device_type=None):
 
 @tf_export('config.list_logical_devices',
            'config.experimental.list_logical_devices')
-@deprecation.deprecated_endpoints(
-    'config.experimental.list_logical_devices')
+@deprecation.deprecated_endpoints('config.experimental.list_logical_devices')
 def list_logical_devices(device_type=None):
   """Return a list of logical devices created by runtime.
 
@@ -374,8 +452,7 @@ def list_logical_devices(device_type=None):
 
 @tf_export('config.get_visible_devices',
            'config.experimental.get_visible_devices')
-@deprecation.deprecated_endpoints(
-    'config.experimental.get_visible_devices')
+@deprecation.deprecated_endpoints('config.experimental.get_visible_devices')
 def get_visible_devices(device_type=None):
   """Get the list of visible physical devices.
 
@@ -408,8 +485,7 @@ def get_visible_devices(device_type=None):
 
 @tf_export('config.set_visible_devices',
            'config.experimental.set_visible_devices')
-@deprecation.deprecated_endpoints(
-    'config.experimental.set_visible_devices')
+@deprecation.deprecated_endpoints('config.experimental.set_visible_devices')
 def set_visible_devices(devices, device_type=None):
   """Set the list of visible devices.
 
@@ -441,6 +517,137 @@ def set_visible_devices(devices, device_type=None):
     RuntimeError: Runtime is already initialized.
   """
   context.context().set_visible_devices(devices, device_type)
+
+
+# TODO(b/188089869): Redesign memory stats related APIs before move them out of
+# experimental.
+@tf_export('config.experimental.get_memory_info')
+def get_memory_info(device):
+  """Get memory info for the chosen device, as a dict.
+
+  This function returns a dict containing information about the device's memory
+  usage. For example:
+
+  >>> if tf.config.list_physical_devices('GPU'):
+  ...   # Returns a dict in the form {'current': <current mem usage>,
+  ...   #                             'peak': <peak mem usage>}
+  ...   tf.config.experimental.get_memory_info('GPU:0')
+
+  Currently returns the following keys:
+    - `'current'`: The current memory used by the device, in bytes.
+    - `'peak'`: The peak memory used by the device across the run of the
+        program, in bytes. Can be reset with
+        `tf.config.experimental.reset_memory_stats`.
+
+  More keys may be added in the future, including device-specific keys.
+
+  Currently only supports GPU and TPU. If called on a CPU device, an exception
+  will be raised.
+
+  For GPUs, TensorFlow will allocate all the memory by default, unless changed
+  with `tf.config.experimental.set_memory_growth`. The dict specifies only the
+  current and peak memory that TensorFlow is actually using, not the memory that
+  TensorFlow has allocated on the GPU.
+
+  Args:
+    device: Device string to get the memory information for, e.g. `"GPU:0"`,
+    `"TPU:0"`. See https://www.tensorflow.org/api_docs/python/tf/device for
+      specifying device strings.
+
+  Returns:
+    A dict with keys `'current'` and `'peak'`, specifying the current and peak
+    memory usage respectively.
+
+  Raises:
+    ValueError: No device found with the device name, like '"nonexistent"'.
+    ValueError: Invalid device name, like '"GPU"', '"CPU:GPU"', '"CPU:"'.
+    ValueError: Multiple devices matched with the device name.
+    ValueError: Memory statistics not tracked, like '"CPU:0"'.
+  """
+  return context.context().get_memory_info(device)
+
+
+# TODO(b/188089869): Redesign memory stats related APIs before move them out of
+# experimental.
+# TODO(b/189498350): Unify the behavior on CPU, GPU and TPU.
+@tf_export('config.experimental.reset_memory_stats')
+def reset_memory_stats(device):
+  """Resets the tracked memory stats for the chosen device.
+
+  This function sets the tracked peak memory for a device to the device's
+  current memory usage. This allows you to measure the peak memory usage for a
+  specific part of your program. For example:
+
+  >>> if tf.config.list_physical_devices('GPU'):
+  ...   # Sets the peak memory to the current memory.
+  ...   tf.config.experimental.reset_memory_stats('GPU:0')
+  ...   # Creates the first peak memory usage.
+  ...   x1 = tf.ones(1000 * 1000, dtype=tf.float64)
+  ...   del x1 # Frees the memory referenced by `x1`.
+  ...   peak1 = tf.config.experimental.get_memory_info('GPU:0')['peak']
+  ...   # Sets the peak memory to the current memory again.
+  ...   tf.config.experimental.reset_memory_stats('GPU:0')
+  ...   # Creates the second peak memory usage.
+  ...   x2 = tf.ones(1000 * 1000, dtype=tf.float32)
+  ...   del x2
+  ...   peak2 = tf.config.experimental.get_memory_info('GPU:0')['peak']
+  ...   assert peak2 < peak1  # tf.float32 consumes less memory than tf.float64.
+
+  Currently only supports GPU and TPU. If called on a CPU device, an exception
+  will be raised.
+
+  Args:
+    device: Device string to reset the memory stats, e.g. `"GPU:0"`, `"TPU:0"`.
+      See https://www.tensorflow.org/api_docs/python/tf/device for specifying
+      device strings.
+
+  Raises:
+    ValueError: No device found with the device name, like '"nonexistent"'.
+    ValueError: Invalid device name, like '"GPU"', '"CPU:GPU"', '"CPU:"'.
+    ValueError: Multiple devices matched with the device name.
+    ValueError: Memory statistics not tracked or clearing memory statistics not
+      supported, like '"CPU:0"'.
+  """
+  context.context().reset_memory_stats(device)
+
+
+@deprecation.deprecated(
+    None,
+    "Use tf.config.experimental.get_memory_info(device)['current'] instead.")
+@tf_export('config.experimental.get_memory_usage')
+def get_memory_usage(device):
+  """Get the current memory usage, in bytes, for the chosen device.
+
+  This function is deprecated in favor of
+  `tf.config.experimental.get_memory_info`. Calling this function is equivalent
+  to calling `tf.config.experimental.get_memory_info()['current']`.
+
+  See https://www.tensorflow.org/api_docs/python/tf/device for specifying device
+  strings.
+
+  For example:
+
+  >>> gpu_devices = tf.config.list_physical_devices('GPU')
+  >>> if gpu_devices:
+  ...   tf.config.experimental.get_memory_usage('GPU:0')
+
+  Does not work for CPU.
+
+  For GPUs, TensorFlow will allocate all the memory by default, unless changed
+  with `tf.config.experimental.set_memory_growth`. This function only returns
+  the memory that TensorFlow is actually using, not the memory that TensorFlow
+  has allocated on the GPU.
+
+  Args:
+    device: Device string to get the bytes in use for, e.g. `"GPU:0"`
+
+  Returns:
+    Total memory usage in bytes.
+
+  Raises:
+    ValueError: Non-existent or CPU device specified.
+  """
+  return get_memory_info(device)['current']
 
 
 @tf_export('config.experimental.get_memory_growth')
@@ -498,6 +705,51 @@ def set_memory_growth(device, enable):
     RuntimeError: Runtime is already initialized.
   """
   context.context().set_memory_growth(device, enable)
+
+
+@tf_export('config.experimental.get_device_details')
+def get_device_details(device):
+  """Returns details about a physical devices.
+
+  This API takes in a `tf.config.PhysicalDevice` returned by
+  `tf.config.list_physical_devices`. It returns a dict with string keys
+  containing various details about the device. Each key is only supported by a
+  subset of devices, so you should not assume the returned dict will have any
+  particular key.
+
+  >>> gpu_devices = tf.config.list_physical_devices('GPU')
+  >>> if gpu_devices:
+  ...   details = tf.config.experimental.get_device_details(gpu_devices[0])
+  ...   details.get('device_name', 'Unknown GPU')
+
+  Currently, details are only returned for GPUs. This function returns an
+  empty dict if passed a non-GPU device.
+
+  The returned dict may have the following keys:
+  * `'device_name'`: A human-readable name of the device as a string, e.g.
+    "Titan V". Unlike `tf.config.PhysicalDevice.name`, this will be the same for
+    multiple devices if each device is the same model. Currently only available
+    for GPUs.
+  * `'compute_capability'`: The
+    [compute capability](https://developer.nvidia.com/cuda-gpus) of the device
+    as a tuple of two ints, in the form `(major_version, minor_version)`. Only
+    available for NVIDIA GPUs
+
+  Note: This is similar to `tf.sysconfig.get_build_info` in that both functions
+  can return information relating to GPUs. However, this function returns
+  run-time information about a specific device (such as a GPU's compute
+  capability), while `tf.sysconfig.get_build_info` returns compile-time
+  information about how TensorFlow was built (such as what version of CUDA
+  TensorFlow was built for).
+
+  Args:
+    device: A `tf.config.PhysicalDevice` returned by
+      `tf.config.list_physical_devices` or `tf.config.get_visible_devices`.
+
+  Returns:
+    A dict with string keys.
+  """
+  return context.context().get_device_details(device)
 
 
 @tf_export('config.get_logical_device_configuration',
@@ -626,7 +878,30 @@ def enable_mlir_bridge():
   context.context().enable_mlir_bridge = True
 
 
+@tf_export('config.experimental.enable_mlir_graph_optimization')
+def enable_mlir_graph_optimization():
+  """Enables experimental MLIR-Based TensorFlow Compiler Optimizations.
+
+  DO NOT USE, DEV AND TESTING ONLY AT THE MOMENT.
+
+  NOTE: MLIR-Based TensorFlow Compiler is under active development and has
+  missing features, please refrain from using. This API exists for development
+  and testing only.
+
+  TensorFlow Compiler Optimizations are responsible general graph level
+  optimizations that in the current stack mostly done by Grappler graph
+  optimizers.
+  """
+  context.context().enable_mlir_graph_optimization = True
+
+
 @tf_export('config.experimental.disable_mlir_bridge')
 def disable_mlir_bridge():
   """Disables experimental MLIR-Based TensorFlow Compiler Bridge."""
   context.context().enable_mlir_bridge = False
+
+
+@tf_export('config.experimental.disable_mlir_graph_optimization')
+def disable_mlir_graph_optimization():
+  """Disables experimental MLIR-Based TensorFlow Compiler Optimizations."""
+  context.context().enable_mlir_graph_optimization = False

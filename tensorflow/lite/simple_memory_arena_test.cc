@@ -14,9 +14,8 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/lite/simple_memory_arena.h"
 
-#include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include "tensorflow/core/platform/logging.h"
+#include "tensorflow/lite/c/common.h"
 #include "tensorflow/lite/testing/util.h"
 
 namespace tflite {
@@ -197,11 +196,8 @@ TEST_P(BufferAndPlanClearingTest, TestClearBufferAndClearPlan) {
   EXPECT_NE(resolved_ptr, nullptr);
 }
 
+INSTANTIATE_TEST_SUITE_P(BufferAndPlanClearingTest, BufferAndPlanClearingTest,
+                         ::testing::Values(true, false));
+
 }  // namespace
 }  // namespace tflite
-
-int main(int argc, char** argv) {
-  ::tflite::LogToStderr();
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}

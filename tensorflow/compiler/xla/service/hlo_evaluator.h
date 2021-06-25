@@ -124,6 +124,15 @@ class HloEvaluator : public DfsHloVisitorWithDefault {
   StatusOr<Literal> EvaluateElementwiseUnaryOp(HloOpcode opcode,
                                                const Literal& operand);
 
+  StatusOr<Literal> EvaluateElementwiseTernaryOp(HloOpcode opcode,
+                                                 const Literal& lhs,
+                                                 const Literal& rhs,
+                                                 const Literal& ehs);
+
+  StatusOr<Literal> EvaluateElementwiseCompareOp(ComparisonDirection direction,
+                                                 const Literal& lhs,
+                                                 const Literal& rhs);
+
   StatusOr<Literal> EvaluateDotOp(const DotDimensionNumbers& dim_numbers,
                                   const PrecisionConfig& precision_config,
                                   const Literal& lhs, const Literal& rhs);
@@ -131,6 +140,10 @@ class HloEvaluator : public DfsHloVisitorWithDefault {
   void set_dynamic_dimension_inference(
       DynamicDimensionInference* dynamic_dimension_inference) {
     dynamic_dimension_inference_ = dynamic_dimension_inference;
+  }
+
+  DynamicDimensionInference* dynamic_dimension_inference() {
+    return dynamic_dimension_inference_;
   }
 
   // Enable the fast path for certain operations like dot or convolution.
@@ -160,6 +173,12 @@ class HloEvaluator : public DfsHloVisitorWithDefault {
       const Array2D<float>& lhs, const Array2D<float>& rhs);
   static std::unique_ptr<Array2D<double>> MatmulArray2D(
       const Array2D<double>& lhs, const Array2D<double>& rhs);
+  static std::unique_ptr<Array2D<std::complex<float>>> MatmulArray2D(
+      const Array2D<std::complex<float>>& lhs,
+      const Array2D<std::complex<float>>& rhs);
+  static std::unique_ptr<Array2D<std::complex<double>>> MatmulArray2D(
+      const Array2D<std::complex<double>>& lhs,
+      const Array2D<std::complex<double>>& rhs);
   static std::unique_ptr<Array2D<int32>> MatmulArray2D(
       const Array2D<int32>& lhs, const Array2D<int32>& rhs);
 
@@ -249,6 +268,8 @@ class HloEvaluator : public DfsHloVisitorWithDefault {
   Status HandleComplex(HloInstruction* complex) override;
 
   Status HandleReduce(HloInstruction* reduce) override;
+
+  Status HandleReduceWindow(HloInstruction* hlo) override;
 
   Status HandleCustomCall(HloInstruction* custom_call) override;
 

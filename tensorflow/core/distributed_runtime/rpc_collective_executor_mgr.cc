@@ -29,9 +29,11 @@ RpcCollectiveExecutorMgr::RpcCollectiveExecutorMgr(
     const ConfigProto& config, const DeviceMgr* dev_mgr,
     std::unique_ptr<DeviceResolverDistributed> dev_resolver,
     std::unique_ptr<CollectiveParamResolverDistributed> param_resolver,
+    std::unique_ptr<NcclCommunicatorInterface> nccl_communicator,
     WorkerCacheInterface* worker_cache, const string& task_name)
     : CollectiveExecutorMgr(config, dev_mgr, std::move(dev_resolver),
-                            std::move(param_resolver)),
+                            std::move(param_resolver),
+                            std::move(nccl_communicator)),
       worker_cache_(worker_cache),
       task_name_(task_name) {
   group_leader_ = (task_name == config.experimental().collective_group_leader())
@@ -47,10 +49,10 @@ RpcCollectiveExecutorMgr::~RpcCollectiveExecutorMgr() {
 
 CollectiveExecutor* RpcCollectiveExecutorMgr::Create(int64 step_id) {
   CollectiveRemoteAccessDistributed* rma =
-      new CollectiveRemoteAccessDistributed(
-          dev_mgr_, dev_resolver_.get(), work_queue_, worker_cache_, step_id);
-  return new BaseCollectiveExecutor(this, rma, step_id, dev_mgr_,
-                                    &gpu_ring_order_);
+      new CollectiveRemoteAccessDistributed(dev_mgr_, dev_resolver_.get(),
+                                            work_queue_, worker_cache_, step_id,
+                                            task_name_);
+  return new BaseCollectiveExecutor(this, rma, step_id, dev_mgr_, work_queue_);
 }
 
 namespace {
@@ -164,6 +166,19 @@ void RpcCollectiveExecutorMgr::RetireStepId(int64 graph_key, int64 step_id) {
   } else {
     LOG(ERROR) << "Failed to find graph_key " << graph_key << " to retire.";
   }
+}
+
+std::unique_ptr<RpcCollectiveExecutorMgr> CreateProdRpcCollectiveExecutorMgr(
+    const ConfigProto& config, const DeviceMgr* device_mgr,
+    std::unique_ptr<NcclCommunicatorInterface> nccl_communicator,
+    WorkerCacheInterface* worker_cache, const string& default_worker_name) {
+  auto dev_resolver = absl::make_unique<DeviceResolverDistributed>(device_mgr);
+  auto param_resolver = absl::make_unique<CollectiveParamResolverDistributed>(
+      config, device_mgr, dev_resolver.get(), nccl_communicator.get(),
+      worker_cache, default_worker_name);
+  return absl::make_unique<RpcCollectiveExecutorMgr>(
+      config, device_mgr, std::move(dev_resolver), std::move(param_resolver),
+      std::move(nccl_communicator), worker_cache, default_worker_name);
 }
 
 }  // namespace tensorflow

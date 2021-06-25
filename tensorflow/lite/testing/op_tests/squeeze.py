@@ -17,7 +17,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 from tensorflow.lite.testing.zip_test_utils import create_tensor_data
 from tensorflow.lite.testing.zip_test_utils import make_zip_of_tests
 from tensorflow.lite.testing.zip_test_utils import register_make_test_function
@@ -65,6 +65,11 @@ def make_squeeze_tests(options):
       "input_shape": [[1, 1, 5, 10], [1, 5, 1, 10], [5, 1, 10]],
       "axis": [[0], [1], [3, 0], [-2, 0, 3, 2]],
       "fully_quantize": [True],
+  }, {
+      "dtype": [tf.string],
+      "input_shape": [[1, 1, 5, 10], [1, 5, 1, 10]],
+      "axis": [[0], []],
+      "fully_quantize": [False],
   }]
 
   def build_graph(parameters):

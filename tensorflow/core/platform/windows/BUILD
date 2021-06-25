@@ -1,3 +1,5 @@
+load("//tensorflow:tensorflow.bzl", "filegroup")
+
 # Tensorflow windows-specific implementations of tensorflow/core/platform libraries.
 load(
     "//tensorflow:tensorflow.bzl",
@@ -12,18 +14,18 @@ package(
     default_visibility = [
         "//tensorflow/core/platform:__pkg__",
     ],
-    licenses = ["notice"],  # Apache 2.0
+    licenses = ["notice"],
 )
 
 cc_library(
     name = "env",
     srcs = [
-        "env.cc",
         "windows_file_system.cc",
         "windows_file_system.h",
         "//tensorflow/core/platform:env.cc",
         "//tensorflow/core/platform:file_system.cc",
         "//tensorflow/core/platform:file_system_helper.cc",
+        "//tensorflow/core/platform:ram_file_system.h",
         "//tensorflow/core/platform:threadpool.cc",
     ],
     hdrs = [
@@ -58,6 +60,7 @@ cc_library(
         "//tensorflow/core/platform:path",
         "//tensorflow/core/platform:platform_port",
         "//tensorflow/core/platform:protobuf",
+        "//tensorflow/core/platform:regexp",
         "//tensorflow/core/platform:setround",
         "//tensorflow/core/platform:status",
         "//tensorflow/core/platform:str_util",
@@ -70,6 +73,21 @@ cc_library(
         "//third_party/eigen3",
         "@com_google_absl//absl/time",
         "@com_google_absl//absl/types:optional",
+    ],
+)
+
+cc_library(
+    name = "env_impl",
+    srcs = [
+        "env.cc",
+    ],
+    tags = [
+        "manual",
+        "no_oss",
+        "nobuilder",
+    ],
+    deps = [
+        ":env",
     ],
 )
 
@@ -233,6 +251,11 @@ cc_library(
         "no_oss",
         "nobuilder",
     ],
+)
+
+filegroup(
+    name = "xla_cpu_runtime_srcs",
+    srcs = ["env_time.cc"],
 )
 
 exports_files(

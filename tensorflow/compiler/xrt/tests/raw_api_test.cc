@@ -49,6 +49,91 @@ limitations under the License.
 namespace tensorflow {
 namespace {
 
+xla::XlaComputation ReturnDynamicR1() {
+  xla::XlaBuilder builder("ReturnDynamicR1");
+  auto p0 = xla::Parameter(&builder, 0,
+                           xla::ShapeUtil::MakeShape(xla::F32, {4}), "P0");
+  auto p1 = xla::Parameter(&builder, 1,
+                           xla::ShapeUtil::MakeShape(xla::F32, {4}), "P1");
+  auto p2 = xla::Parameter(&builder, 2, xla::ShapeUtil::MakeShape(xla::S32, {}),
+                           "P2");
+  auto sum = xla::Add(p0, p1);
+  auto pad_sum = xla::SetDimensionSize(sum, p2, 0);
+  return builder.Build(pad_sum).ValueOrDie();
+}
+
+xla::XlaComputation ReturnDynamicR2() {
+  xla::XlaBuilder builder("ReturnDynamicR2");
+  auto p0 = xla::Parameter(&builder, 0,
+                           xla::ShapeUtil::MakeShape(xla::F32, {2, 4}), "P0");
+  auto p1 = xla::Parameter(&builder, 1,
+                           xla::ShapeUtil::MakeShape(xla::F32, {2, 4}), "P1");
+  auto p2 = xla::Parameter(&builder, 2, xla::ShapeUtil::MakeShape(xla::S32, {}),
+                           "P2");
+  auto sum = xla::Add(p0, p1);
+  auto pad_sum_dim0 = xla::SetDimensionSize(sum, p2, 0);
+  auto pad_sum_dim1 = xla::SetDimensionSize(pad_sum_dim0, p2, 1);
+  return builder.Build(pad_sum_dim1).ValueOrDie();
+}
+
+xla::XlaComputation AcceptDynamicR1() {
+  xla::XlaBuilder builder("AcceptDynamicR1");
+  xla::Shape dyn_shape = xla::ShapeUtil::MakeShape(xla::F32, {4});
+  dyn_shape.set_dynamic_dimension(0, true);
+  auto p0 = xla::Parameter(&builder, 0, dyn_shape, "P0");
+  auto p1 = xla::Parameter(&builder, 1, dyn_shape, "P1");
+  auto sum = xla::Add(p0, p1);
+  return builder.Build(sum).ValueOrDie();
+}
+
+xla::XlaComputation AcceptDynamicR2() {
+  xla::XlaBuilder builder("AcceptDynamicR2");
+  xla::Shape dyn_shape;
+  dyn_shape = xla::ShapeUtil::MakeShape(xla::F32, {2, 4});
+  dyn_shape.set_dynamic_dimension(1, true);
+  auto p0 = xla::Parameter(&builder, 0, dyn_shape, "P0");
+  auto negate = xla::Neg(p0);
+  return builder.Build(negate).ValueOrDie();
+}
+
+xla::XlaComputation ReturnDynamicR1Tuple() {
+  xla::XlaBuilder builder("ReturnDynamicR1Tuple");
+  auto p0 = xla::Parameter(&builder, 0,
+                           xla::ShapeUtil::MakeShape(xla::F32, {4}), "P0");
+  auto p1 = xla::Parameter(&builder, 1,
+                           xla::ShapeUtil::MakeShape(xla::F32, {4}), "P1");
+  auto p2 = xla::Parameter(&builder, 2, xla::ShapeUtil::MakeShape(xla::S32, {}),
+                           "P2");
+  auto sum = xla::Add(p0, p1);
+  auto sub = xla::Sub(p0, p1);
+  auto one = xla::One(&builder, xla::S32);
+  auto pad_sum = xla::SetDimensionSize(sum, p2, 0);
+  auto pad_sub = xla::SetDimensionSize(sub, p2 + one, 0);
+  auto tuple = xla::Tuple(&builder, {pad_sum, sum, pad_sub});
+  return builder.Build(tuple, /*remove_dynamic_dimensions=*/true).ValueOrDie();
+}
+
+xla::XlaComputation AcceptDynamicR1Tuple() {
+  xla::XlaBuilder builder("AcceptDynamicR1");
+  xla::Shape dyn_shape = xla::ShapeUtil::MakeShape(xla::F32, {4});
+  dyn_shape.set_dynamic_dimension(0, true);
+  xla::Shape tuple_shape =
+      xla::ShapeUtil::MakeTupleShape({dyn_shape, dyn_shape});
+  xla::Shape nest_tuple_shape =
+      xla::ShapeUtil::MakeTupleShape({dyn_shape, dyn_shape});
+  auto p = xla::Parameter(&builder, 0, tuple_shape, "P0");
+  auto p0 = xla::GetTupleElement(p, 0);
+  auto p1 = xla::GetTupleElement(p, 1);
+  auto sum = xla::Add(p0, p1);
+  return builder.Build(sum).ValueOrDie();
+}
+
+template <typename T>
+xla::LiteralProto CreateR0(T v) {
+  auto array = xla::LiteralUtil::CreateR0<T>(v);
+  return array.ToProto();
+}
+
 class XrtClientSession : public ClientSession {
  public:
   explicit XrtClientSession(const Scope& scope) : ClientSession(scope) {
@@ -1035,6 +1120,329 @@ TEST(RawApiTest, CompileAndExecute) {
   EXPECT_EQ(program_shape.parameters_size(), 2);
 }
 
+TEST(RawApiTest, DynamicR1Test) {
+  xrt::XLAAllocation p0;
+  *p0.mutable_value() = FloatVector({1.0f, 2.0f, 0.5f, -1.0f});
+  xrt::XLAAllocation p1;
+  *p1.mutable_value() = FloatVector({1.0f, -1.0f, 2.5f, 1.17f});
+  xrt::XLAAllocation p2;
+  *p2.mutable_value() = CreateR0<xla::int32>(2);
+
+  xrt::XLAComputation c;
+  auto config = c.mutable_config();
+  auto shapes = config->mutable_program_shape();
+  *shapes->add_parameters() =
+      xla::ShapeUtil::MakeShape(xla::F32, {4}).ToProto();
+  *shapes->add_parameters() =
+      xla::ShapeUtil::MakeShape(xla::F32, {4}).ToProto();
+  *shapes->add_parameters() = xla::ShapeUtil::MakeShape(xla::S32, {}).ToProto();
+  xla::Shape dyn_shape = xla::ShapeUtil::MakeShape(xla::F32, {4});
+  dyn_shape.set_dynamic_dimension(0, true);
+  *shapes->mutable_result() = dyn_shape.ToProto();
+  StoreComputationSnapshot(ReturnDynamicR1(), c.mutable_hlo_snapshot());
+
+  xrt::XRTExecutionConfig e;
+  e.set_release_input_handles(true);
+  e.set_release_compilation_handle(true);
+
+  Scope root = Scope::NewRootScope().WithDevice(DeviceFromFlag());
+  Scope cpu_root = root.WithDevice("/device:CPU:0");
+  auto e_config = ops::Const(cpu_root, e.SerializeAsString());
+  auto computation = ops::Const(cpu_root, c.SerializeAsString());
+  auto c_handle = ops::XRTCompile(root, computation);
+  auto p0_value = ops::Const(cpu_root, p0.SerializeAsString());
+  auto p0_handle = ops::XRTAllocate(root, p0_value);
+  auto p1_value = ops::Const(cpu_root, p1.SerializeAsString());
+  auto p1_handle = ops::XRTAllocate(root, p1_value);
+  auto p2_value = ops::Const(cpu_root, p2.SerializeAsString());
+  auto p2_handle = ops::XRTAllocate(root, p2_value);
+  auto result = ops::XRTExecute(
+      root, c_handle.handle, e_config,
+      {Output(p0_handle), Output(p1_handle), Output(p2_handle)});
+  auto read_back = ops::XRTReadLiteralAndRelease(root, result);
+  TF_ASSERT_OK(root.status());
+
+  XrtClientSession session(root);
+  std::vector<Tensor> outputs;
+  TF_EXPECT_OK(session.Run({read_back, c_handle.program_shape}, &outputs));
+
+  xla::LiteralProto response;
+  EXPECT_TRUE(response.ParseFromString(outputs[0].scalar<tstring>()()));
+  auto expected = xla::LiteralUtil::CreateR1<float>({2.0f, 1.0f});
+  EXPECT_TRUE(CompareLiteralToLiteralProto(expected, response));
+}
+
+TEST(RawApiTest, DynamicR2Test) {
+  xrt::XLAAllocation p0;
+  *p0.mutable_value() = xla::LiteralUtil::CreateR2({{1.0f, 2.0f, 0.5f, -1.0f},
+                                                    {1.5f, 2.5f, 3.0f, -2.0f}})
+                            .ToProto();
+  xrt::XLAAllocation p1;
+  *p1.mutable_value() = xla::LiteralUtil::CreateR2({{1.0f, -1.0f, 2.5f, 1.17f},
+                                                    {1.2f, -1.6f, 2.8f, 1.24f}})
+                            .ToProto();
+  xrt::XLAAllocation p2;
+  *p2.mutable_value() = CreateR0<xla::int32>(2);
+
+  xrt::XLAComputation c;
+  auto config = c.mutable_config();
+  auto shapes = config->mutable_program_shape();
+  *shapes->add_parameters() =
+      xla::ShapeUtil::MakeShape(xla::F32, {2, 4}).ToProto();
+  *shapes->add_parameters() =
+      xla::ShapeUtil::MakeShape(xla::F32, {2, 4}).ToProto();
+  *shapes->add_parameters() = xla::ShapeUtil::MakeShape(xla::S32, {}).ToProto();
+  xla::Shape dyn_shape = xla::ShapeUtil::MakeShape(xla::F32, {2, 4});
+  dyn_shape.set_dynamic_dimension(0, true);
+  dyn_shape.set_dynamic_dimension(1, true);
+  *shapes->mutable_result() = dyn_shape.ToProto();
+  StoreComputationSnapshot(ReturnDynamicR2(), c.mutable_hlo_snapshot());
+
+  xrt::XRTExecutionConfig e;
+  e.set_release_input_handles(true);
+  e.set_release_compilation_handle(true);
+
+  Scope root = Scope::NewRootScope().WithDevice(DeviceFromFlag());
+  Scope cpu_root = root.WithDevice("/device:CPU:0");
+  auto e_config = ops::Const(cpu_root, e.SerializeAsString());
+  auto computation = ops::Const(cpu_root, c.SerializeAsString());
+  auto c_handle = ops::XRTCompile(root, computation);
+  auto p0_value = ops::Const(cpu_root, p0.SerializeAsString());
+  auto p0_handle = ops::XRTAllocate(root, p0_value);
+  auto p1_value = ops::Const(cpu_root, p1.SerializeAsString());
+  auto p1_handle = ops::XRTAllocate(root, p1_value);
+  auto p2_value = ops::Const(cpu_root, p2.SerializeAsString());
+  auto p2_handle = ops::XRTAllocate(root, p2_value);
+  auto result = ops::XRTExecute(
+      root, c_handle.handle, e_config,
+      {Output(p0_handle), Output(p1_handle), Output(p2_handle)});
+  auto read_back = ops::XRTReadLiteralAndRelease(root, result);
+  TF_ASSERT_OK(root.status());
+
+  XrtClientSession session(root);
+  std::vector<Tensor> outputs;
+  TF_EXPECT_OK(session.Run({read_back, c_handle.program_shape}, &outputs));
+
+  xla::LiteralProto response;
+  EXPECT_TRUE(response.ParseFromString(outputs[0].scalar<tstring>()()));
+  auto expected = xla::LiteralUtil::CreateR2<float>({{2.0f, 1.0f}, {2.7, 0.9}});
+  EXPECT_TRUE(CompareLiteralToLiteralProto(expected, response));
+}
+
+TEST(RawApiTest, DynamicR1TupleTest) {
+  xrt::XLAAllocation p0;
+  *p0.mutable_value() = FloatVector({1.0f, 2.0f, 0.5f, -1.0f});
+  xrt::XLAAllocation p1;
+  *p1.mutable_value() = FloatVector({1.0f, -1.0f, -0.5f, 1.0f});
+  xrt::XLAAllocation p2;
+  *p2.mutable_value() = CreateR0<xla::int32>(2);
+
+  xrt::XLAComputation c;
+  auto config = c.mutable_config();
+  auto shapes = config->mutable_program_shape();
+  *shapes->add_parameters() =
+      xla::ShapeUtil::MakeShape(xla::F32, {4}).ToProto();
+  *shapes->add_parameters() =
+      xla::ShapeUtil::MakeShape(xla::F32, {4}).ToProto();
+  *shapes->add_parameters() = xla::ShapeUtil::MakeShape(xla::S32, {}).ToProto();
+  xla::Shape dyn_shape = xla::ShapeUtil::MakeShape(xla::F32, {4});
+  dyn_shape.set_dynamic_dimension(0, true);
+  *shapes->mutable_result() =
+      xla::ShapeUtil::MakeTupleShape(
+          {dyn_shape, xla::ShapeUtil::MakeShape(xla::F32, {4}), dyn_shape})
+          .ToProto();
+  StoreComputationSnapshot(ReturnDynamicR1Tuple(), c.mutable_hlo_snapshot());
+
+  xrt::XRTExecutionConfig e;
+  e.set_release_input_handles(true);
+  e.set_release_compilation_handle(true);
+
+  Scope root = Scope::NewRootScope().WithDevice(DeviceFromFlag());
+  Scope cpu_root = root.WithDevice("/device:CPU:0");
+  auto e_config = ops::Const(cpu_root, e.SerializeAsString());
+  auto computation = ops::Const(cpu_root, c.SerializeAsString());
+  auto c_handle = ops::XRTCompile(root, computation);
+  auto p0_value = ops::Const(cpu_root, p0.SerializeAsString());
+  auto p0_handle = ops::XRTAllocate(root, p0_value);
+  auto p1_value = ops::Const(cpu_root, p1.SerializeAsString());
+  auto p1_handle = ops::XRTAllocate(root, p1_value);
+  auto p2_value = ops::Const(cpu_root, p2.SerializeAsString());
+  auto p2_handle = ops::XRTAllocate(root, p2_value);
+  auto result = ops::XRTExecute(
+      root, c_handle.handle, e_config,
+      {Output(p0_handle), Output(p1_handle), Output(p2_handle)});
+  auto read_back = ops::XRTReadLiteralAndRelease(root, result);
+  TF_ASSERT_OK(root.status());
+
+  XrtClientSession session(root);
+  std::vector<Tensor> outputs;
+  TF_EXPECT_OK(session.Run({read_back, c_handle.program_shape}, &outputs));
+
+  xla::LiteralProto response;
+  EXPECT_TRUE(response.ParseFromString(outputs[0].scalar<tstring>()()));
+
+  auto expected0 = xla::LiteralUtil::CreateR1<float>({2.0f, 1.0f});
+  auto expected1 = xla::LiteralUtil::CreateR1<float>({2.0f, 1.0f, 0.0f, 0.0f});
+  auto expected2 = xla::LiteralUtil::CreateR1<float>({0.0f, 3.0f, 1.0f});
+  auto expected =
+      xla::LiteralUtil::MakeTuple({&expected0, &expected1, &expected2});
+  EXPECT_TRUE(CompareLiteralToLiteralProto(expected, response));
+}
+
+TEST(RawApiTest, AcceptDynamicR1TupleTest) {
+  xrt::XLAAllocation p0;
+  *p0.mutable_value() = FloatVector({1.0f, 2.0f, 0.5f});
+  xrt::XLAAllocation p1;
+  *p1.mutable_value() = FloatVector({1.0f, -1.0f, -0.5f});
+
+  xrt::XLATupleNode tuple_desc;
+  auto subdesc_10 = tuple_desc.add_tuples();
+  auto subdesc_11 = tuple_desc.add_tuples();
+  subdesc_10->set_input_index(0);
+  subdesc_10->set_release_input_handle(true);
+  subdesc_11->set_input_index(1);
+  subdesc_11->set_release_input_handle(true);
+
+  xrt::XLAComputation c;
+  auto config = c.mutable_config();
+  auto shapes = config->mutable_program_shape();
+  xla::Shape dyn_input_shape = xla::ShapeUtil::MakeShape(xla::F32, {4});
+  dyn_input_shape.set_dynamic_dimension(0, true);
+  xla::Shape dyn_tuple_shape =
+      xla::ShapeUtil::MakeTupleShape({dyn_input_shape, dyn_input_shape});
+  *shapes->add_parameters() = dyn_tuple_shape.ToProto();
+  xla::Shape dyn_shape = xla::ShapeUtil::MakeShape(xla::F32, {4});
+  dyn_shape.set_dynamic_dimension(0, true);
+  *shapes->mutable_result() = dyn_shape.ToProto();
+  StoreComputationSnapshot(AcceptDynamicR1Tuple(), c.mutable_hlo_snapshot());
+
+  xrt::XRTExecutionConfig e;
+  e.set_release_input_handles(true);
+  e.set_release_compilation_handle(true);
+
+  Scope root = Scope::NewRootScope().WithDevice(DeviceFromFlag());
+  Scope cpu_root = root.WithDevice("/device:CPU:0");
+  auto e_config = ops::Const(cpu_root, e.SerializeAsString());
+  auto computation = ops::Const(cpu_root, c.SerializeAsString());
+  auto c_handle = ops::XRTCompile(root, computation);
+  auto p0_value = ops::Const(cpu_root, p0.SerializeAsString());
+  auto p0_handle = ops::XRTAllocate(root, p0_value);
+  auto p1_value = ops::Const(cpu_root, p1.SerializeAsString());
+  auto p1_handle = ops::XRTAllocate(root, p1_value);
+
+  auto tuple_0 = ops::Const(root.WithDevice("/device:CPU:0"),
+                            tuple_desc.SerializeAsString());
+  auto t0_handle = ops::XRTMakeTuple(
+      root, tuple_0,
+      {static_cast<Output>(p0_handle), static_cast<Output>(p1_handle)});
+  auto result = ops::XRTExecute(root, c_handle.handle, e_config,
+                                {static_cast<Output>(t0_handle)});
+  auto read_back = ops::XRTReadLiteralAndRelease(root, result);
+  TF_ASSERT_OK(root.status());
+
+  XrtClientSession session(root);
+  std::vector<Tensor> outputs;
+  TF_EXPECT_OK(session.Run({read_back, c_handle.program_shape}, &outputs));
+
+  xla::LiteralProto response;
+  EXPECT_TRUE(response.ParseFromString(outputs[0].scalar<tstring>()()));
+
+  auto expected = xla::LiteralUtil::CreateR1<float>({2.0f, 1.0f, 0.0f});
+  EXPECT_TRUE(CompareLiteralToLiteralProto(expected, response));
+}
+
+TEST(RawApiTest, AcceptDynamicR1Test) {
+  xrt::XLAAllocation p0;
+  *p0.mutable_value() = FloatVector({1.0f, 2.0f, 0.5f});
+  xrt::XLAAllocation p1;
+  *p1.mutable_value() = FloatVector({1.0f, -1.0f, -0.5f});
+
+  xrt::XLAComputation c;
+  auto config = c.mutable_config();
+  auto shapes = config->mutable_program_shape();
+  xla::Shape dyn_input_shape = xla::ShapeUtil::MakeShape(xla::F32, {4});
+  dyn_input_shape.set_dynamic_dimension(0, true);
+  *shapes->add_parameters() = dyn_input_shape.ToProto();
+  *shapes->add_parameters() = dyn_input_shape.ToProto();
+  xla::Shape dyn_shape = xla::ShapeUtil::MakeShape(xla::F32, {4});
+  dyn_shape.set_dynamic_dimension(0, true);
+  *shapes->mutable_result() = dyn_shape.ToProto();
+  StoreComputationSnapshot(AcceptDynamicR1(), c.mutable_hlo_snapshot());
+
+  xrt::XRTExecutionConfig e;
+  e.set_release_input_handles(true);
+  e.set_release_compilation_handle(true);
+
+  Scope root = Scope::NewRootScope().WithDevice(DeviceFromFlag());
+  Scope cpu_root = root.WithDevice("/device:CPU:0");
+  auto e_config = ops::Const(cpu_root, e.SerializeAsString());
+  auto computation = ops::Const(cpu_root, c.SerializeAsString());
+  auto c_handle = ops::XRTCompile(root, computation);
+  auto p0_value = ops::Const(cpu_root, p0.SerializeAsString());
+  auto allocate_op_0 = ops::XRTAllocate(root, p0_value);
+  auto p1_value = ops::Const(cpu_root, p1.SerializeAsString());
+  auto allocate_op_1 = ops::XRTAllocate(root, p1_value);
+  auto result = ops::XRTExecute(root, c_handle.handle, e_config,
+                                {Output(allocate_op_0), Output(allocate_op_1)});
+  auto read_back = ops::XRTReadLiteralAndRelease(root, result);
+  TF_ASSERT_OK(root.status());
+
+  XrtClientSession session(root);
+  std::vector<Tensor> outputs;
+  TF_EXPECT_OK(session.Run({read_back, c_handle.program_shape}, &outputs));
+
+  xla::LiteralProto response;
+  EXPECT_TRUE(response.ParseFromString(outputs[0].scalar<tstring>()()));
+
+  auto expected = xla::LiteralUtil::CreateR1<float>({2.0f, 1.0f, 0.0f});
+  EXPECT_TRUE(CompareLiteralToLiteralProto(expected, response));
+}
+
+TEST(RawApiTest, AcceptDynamicR2Test) {
+  xrt::XLAAllocation p0;
+  *p0.mutable_value() =
+      xla::LiteralUtil::CreateR2({{-1.0f, 2.0f, 3.0f}, {-4.0f, -5.0f, 6.0f}})
+          .ToProto();
+
+  xrt::XLAComputation c;
+  auto config = c.mutable_config();
+  auto shapes = config->mutable_program_shape();
+  // Compile time expects ascending layout.
+  xla::Shape dyn_shape = xla::ShapeUtil::MakeShape(xla::F32, {2, 4});
+  dyn_shape.set_dynamic_dimension(1, true);
+  *shapes->add_parameters() = dyn_shape.ToProto();
+
+  *shapes->mutable_result() = dyn_shape.ToProto();
+  StoreComputationSnapshot(AcceptDynamicR2(), c.mutable_hlo_snapshot());
+
+  xrt::XRTExecutionConfig e;
+  e.set_release_input_handles(true);
+  e.set_release_compilation_handle(true);
+
+  Scope root = Scope::NewRootScope().WithDevice(DeviceFromFlag());
+  Scope cpu_root = root.WithDevice("/device:CPU:0");
+  auto e_config = ops::Const(cpu_root, e.SerializeAsString());
+  auto computation = ops::Const(cpu_root, c.SerializeAsString());
+  auto c_handle = ops::XRTCompile(root, computation);
+  auto p0_value = ops::Const(cpu_root, p0.SerializeAsString());
+  auto p0_handle = ops::XRTAllocate(root, p0_value);
+  auto result =
+      ops::XRTExecute(root, c_handle.handle, e_config, {Output(p0_handle)});
+  auto read_back = ops::XRTReadLiteralAndRelease(root, result);
+  TF_ASSERT_OK(root.status());
+
+  XrtClientSession session(root);
+  std::vector<Tensor> outputs;
+  TF_EXPECT_OK(session.Run({read_back, c_handle.program_shape}, &outputs));
+
+  xla::LiteralProto response;
+  EXPECT_TRUE(response.ParseFromString(outputs[0].scalar<tstring>()()));
+
+  auto expected = xla::LiteralUtil::CreateR2<float>(
+      {{1.0f, -2.0f, -3.0f}, {4.0f, 5.0f, -6.0f}});
+  EXPECT_TRUE(CompareLiteralToLiteralProto(expected, response));
+}
+
 TEST(RawApiTest, CompileAndExecuteWithArgumentVector) {
   xrt::XLAAllocation p0;
   *p0.mutable_value() = FloatVector({1.0f, 2.0f});
@@ -1477,6 +1885,105 @@ TEST(RawApiTest, CompileAndExecuteWithReusedBuffers) {
   EXPECT_TRUE(CompareLiterals(return_literal, expected_literal));
 }
 
+TEST(RawApiTest, CompileAndExecuteWithReusedBuffersS64) {
+  xla::Shape element_shape = xla::ShapeUtil::MakeShape(xla::S64, {2});
+  xla::Shape shape =
+      xla::ShapeUtil::MakeTupleShape({element_shape, element_shape});
+  xla::Shape return_shape = xla::ShapeUtil::MakeTupleShape(
+      {element_shape, element_shape, element_shape, element_shape});
+  xla::XlaBuilder builder("ReuseBuffer");
+  auto param = xla::Parameter(&builder, 0, shape, "param");
+  auto p0 = xla::GetTupleElement(param, 0);
+  auto p1 = xla::GetTupleElement(param, 1);
+  auto add = xla::Add(p0, p1);
+  auto sub = xla::Sub(p0, p1);
+  xla::Tuple(&builder, {add, sub, p0, p1});
+
+  // Flip the tuple literals in the input handle.
+  builder.SetUpAlias({1}, 0, {0});
+  builder.SetUpAlias({0}, 0, {1});
+
+  auto computation = builder.Build().ValueOrDie();
+
+  auto literal0 = xla::LiteralUtil::CreateR1<int64>({1, 2});
+  auto literal1 = xla::LiteralUtil::CreateR1<int64>({5, 9});
+  auto literal = xla::LiteralUtil::MakeTuple({&literal0, &literal1});
+
+  xrt::XLAAllocation param_alloc;
+  *param_alloc.mutable_value() = literal.ToProto();
+
+  xrt::XLAComputation c;
+  auto config = c.mutable_config();
+  auto shapes = config->mutable_program_shape();
+  *shapes->add_parameters() = shape.ToProto();
+  *shapes->mutable_result() = return_shape.ToProto();
+  StoreComputationSnapshot(computation, c.mutable_hlo_snapshot());
+
+  xrt::XRTExecutionConfig e;
+  e.set_release_input_handles(false);
+  e.set_release_compilation_handle(true);
+
+  Scope root = Scope::NewRootScope().WithDevice(DeviceFromFlag());
+  XrtClientSession session(root);
+  auto e_config =
+      ops::Const(root.WithDevice("/device:CPU:0"), e.SerializeAsString());
+  auto c_data =
+      ops::Const(root.WithDevice("/device:CPU:0"), c.SerializeAsString());
+  auto c_handle = ops::XRTCompile(root, c_data);
+  auto param_value = ops::Const(root.WithDevice("/device:CPU:0"),
+                                param_alloc.SerializeAsString());
+  auto param_handle = ops::XRTAllocate(root, param_value);
+  TF_ASSERT_OK(root.status());
+
+  std::vector<Tensor> outputs;
+  TF_EXPECT_OK(session.Run({param_handle}, &outputs));
+
+  int64 alloc_handle = outputs[0].scalar<int64>()();
+
+  // Note that we release the result handle immediately, but since we aliased
+  // the output buffers onto the input allocation ones (held in alloc_handle),
+  // we can fetch the result from there.
+  auto result =
+      ops::XRTExecute(root, c_handle.handle, e_config, {Input(alloc_handle)});
+  auto read_back = ops::XRTReadLiteral(root, result);
+  auto release = ops::XRTReleaseAllocationHandle(
+      root.WithControlDependencies(read_back), result);
+  TF_ASSERT_OK(root.status());
+
+  TF_EXPECT_OK(
+      session.Run(ClientSession::FeedType(), {read_back}, {release}, &outputs));
+
+  xla::Literal exec_literal = ReadOutputLiteral(outputs, 0);
+  auto exec_literal_parts = exec_literal.DecomposeTuple();
+  ASSERT_EQ(exec_literal_parts.size(), 4);
+
+  EXPECT_TRUE(CompareLiterals(exec_literal_parts[2], literal0));
+  EXPECT_TRUE(CompareLiterals(exec_literal_parts[3], literal1));
+
+  // Now we read back the original input handle values, which at this point
+  // should contain the result of the XLA computation.
+  auto read_handle = ops::XRTReadLiteral(root, Input(alloc_handle));
+  TF_ASSERT_OK(root.status());
+  auto release_handle = ops::XRTReleaseAllocationHandle(
+      root.WithControlDependencies(read_handle), Input(alloc_handle));
+  TF_ASSERT_OK(root.status());
+
+  TF_EXPECT_OK(session.Run(ClientSession::FeedType(), {read_handle},
+                           {release_handle}, &outputs));
+
+  xla::Literal return_literal = ReadOutputLiteral(outputs, 0);
+
+  auto expected_literal0 = xla::LiteralUtil::CreateR1<int64>({6, 11});
+  auto expected_literal1 = xla::LiteralUtil::CreateR1<int64>({-4, -7});
+  // The first element of the computation returned tuple would be the add
+  // (expected_literal0), but since we flipped the buffers, the sub
+  // (expected_literal1) should come first.
+  auto expected_literal =
+      xla::LiteralUtil::MakeTuple({&expected_literal1, &expected_literal0});
+
+  EXPECT_TRUE(CompareLiterals(return_literal, expected_literal));
+}
+
 TEST(RawApiTest, CompileAndExecuteWithS64Argument) {
   xrt::XLAAllocation p0;
   *p0.mutable_value() = xla::LiteralUtil::CreateR0<int64>(11031965).ToProto();
@@ -1697,6 +2204,22 @@ TEST(RawApiTest, TestMetricsFetch) {
   for (auto& metric : report.metrics()) {
     EXPECT_EQ(metric.name().compare(0, 16, "/tensorflow/xrt/"), 0);
   }
+}
+
+TEST(RawApiTest, TestMemoryInfo) {
+  Scope root = Scope::NewRootScope().WithDevice(DeviceFromFlag());
+  Output result = ops::XRTMemoryInfo(root);
+  TF_ASSERT_OK(root.status());
+
+  ClientSession session(root);
+  std::vector<Tensor> outputs;
+  TF_EXPECT_OK(session.Run({result}, &outputs));
+  ASSERT_EQ(outputs.size(), 1);
+
+  xrt::MemoryInfo mem_info;
+  EXPECT_TRUE(ParseFromTString(outputs[0].scalar<tstring>()(), &mem_info));
+  EXPECT_GT(mem_info.kb_total(), 0);
+  EXPECT_GT(mem_info.kb_free(), 0);
 }
 
 }  // namespace

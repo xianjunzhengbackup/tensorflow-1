@@ -29,9 +29,8 @@ namespace tensorflow {
 // If true, cpu allocator collects more stats.
 static bool cpu_allocator_collect_stats = false;
 
-void EnableCPUAllocatorStats(bool enable) {
-  cpu_allocator_collect_stats = enable;
-}
+void EnableCPUAllocatorStats() { cpu_allocator_collect_stats = true; }
+void DisableCPUAllocatorStats() { cpu_allocator_collect_stats = false; }
 bool CPUAllocatorStatsEnabled() { return cpu_allocator_collect_stats; }
 
 static const int kMaxTotalAllocationWarnings = 1;
@@ -75,7 +74,7 @@ class CPUAllocator : public Allocator {
   string Name() override { return "cpu"; }
 
   void* AllocateRaw(size_t alignment, size_t num_bytes) override {
-    if (num_bytes > LargeAllocationWarningBytes() &&
+    if (num_bytes > static_cast<size_t>(LargeAllocationWarningBytes()) &&
         single_allocation_warning_count_ < kMaxSingleAllocationWarnings) {
       ++single_allocation_warning_count_;
       LOG(WARNING) << "Allocation of " << num_bytes << " exceeds "
@@ -116,15 +115,18 @@ class CPUAllocator : public Allocator {
   }
 
   absl::optional<AllocatorStats> GetStats() override {
+    if (!cpu_allocator_collect_stats) return absl::nullopt;
     mutex_lock l(mu_);
     return stats_;
   }
 
-  void ClearStats() override {
+  bool ClearStats() override {
+    if (!cpu_allocator_collect_stats) return false;
     mutex_lock l(mu_);
     stats_.num_allocs = 0;
     stats_.peak_bytes_in_use = stats_.bytes_in_use;
     stats_.largest_alloc_size = 0;
+    return true;
   }
 
   size_t AllocatedSizeSlow(const void* ptr) const override {
@@ -133,12 +135,12 @@ class CPUAllocator : public Allocator {
 
  private:
   mutex mu_;
-  AllocatorStats stats_ GUARDED_BY(mu_);
+  AllocatorStats stats_ TF_GUARDED_BY(mu_);
 
   // Use <atomic> for single allocations to avoid mutex contention when
   // statistics are disabled.
   std::atomic<int> single_allocation_warning_count_;
-  int total_allocation_warning_count_ GUARDED_BY(mu_);
+  int total_allocation_warning_count_ TF_GUARDED_BY(mu_);
 
   TF_DISALLOW_COPY_AND_ASSIGN(CPUAllocator);
 };
@@ -157,13 +159,17 @@ class CPUAllocatorFactory : public AllocatorFactory {
     explicit CPUSubAllocator(CPUAllocator* cpu_allocator)
         : SubAllocator({}, {}), cpu_allocator_(cpu_allocator) {}
 
-    void* Alloc(size_t alignment, size_t num_bytes) override {
+    void* Alloc(size_t alignment, size_t num_bytes,
+                size_t* bytes_received) override {
+      *bytes_received = num_bytes;
       return cpu_allocator_->AllocateRaw(alignment, num_bytes);
     }
 
     void Free(void* ptr, size_t num_bytes) override {
       cpu_allocator_->DeallocateRaw(ptr);
     }
+
+    bool SupportsCoalescing() const override { return false; }
 
    private:
     CPUAllocator* cpu_allocator_;

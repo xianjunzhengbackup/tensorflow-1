@@ -21,9 +21,9 @@ limitations under the License.
 #define TENSORFLOW_STREAM_EXECUTOR_ROCM_ROCM_BLAS_H_
 
 #include "absl/synchronization/mutex.h"
+#include "tensorflow/core/platform/thread_annotations.h"
 #include "tensorflow/stream_executor/blas.h"
 #include "tensorflow/stream_executor/platform/port.h"
-#include "tensorflow/stream_executor/platform/thread_annotations.h"
 #include "tensorflow/stream_executor/plugin_registry.h"
 #include "tensorflow/stream_executor/temporary_device_memory.h"
 
@@ -43,6 +43,16 @@ struct RocBlasTypeConversionHelper {
 template <>
 struct RocBlasTypeConversionHelper<Eigen::half> {
   using mapped_type = rocblas_half;
+};
+
+template <>
+struct RocBlasTypeConversionHelper<std::complex<float>> {
+  using mapped_type = rocblas_float_complex;
+};
+
+template <>
+struct RocBlasTypeConversionHelper<std::complex<double>> {
+  using mapped_type = rocblas_double_complex;
 };
 
 // Opaque and unique identifier for the rocBLAS plugin.
@@ -78,7 +88,7 @@ class ROCMBlas : public blas::BlasSupport {
   // rocBLAS is stateful, and only be associated with one stream (in order to
   // enqueue dispatch) at a given time. As a result, this generally must be
   // invoked before calling into rocBLAS.
-  bool SetStream(Stream *stream) EXCLUSIVE_LOCKS_REQUIRED(mu_);
+  bool SetStream(Stream *stream) TF_EXCLUSIVE_LOCKS_REQUIRED(mu_);
 
   // A helper function that calls the real rocBLAS function together with error
   // handling.
@@ -103,6 +113,16 @@ class ROCMBlas : public blas::BlasSupport {
     return DoBlasInternalImpl(rocblas_func, stream, pointer_mode_host,
                               /*err_on_failure=*/true, args...);
   }
+
+  // Same as above, but returns Status.
+  template <typename... Args>
+  port::Status DoBlasInternalStatus(Args... args) {
+    if (!DoBlasInternal(args...)) {
+      return port::InternalError("Failed calling rocBLAS");
+    }
+    return port::Status::OK();
+  }
+
   template <typename FuncT, typename... Args>
   bool DoBlasInternalFailureOK(FuncT rocblas_func, Stream *stream,
                                bool pointer_mode_host, Args... args) {
@@ -121,7 +141,8 @@ class ROCMBlas : public blas::BlasSupport {
       std::unique_ptr<TemporaryDeviceMemory<
           typename RocBlasTypeConversionHelper<T>::mapped_type>> *temp_memory,
       DeviceMemory<typename RocBlasTypeConversionHelper<T>::mapped_type>
-          *device_memory);
+          *device_memory,
+      bool copy_data, bool &reallocated);
 
   // A helper function to implement DoBlasGemmBatched interfaces for generic
   // types.
@@ -148,21 +169,6 @@ class ROCMBlas : public blas::BlasSupport {
       T beta, const port::ArraySlice<DeviceMemory<T> *> &c_ptrs_to_wrappers,
       int ldc, int batch_count, ScratchAllocator *scratch_allocator);
 
-  // Helper function for implementing DoBlasGemmWithAlgorithm.
-  //
-  // We take alpha and beta by const reference because T might be Eigen::half,
-  // and we want to avoid pulling in a dependency on Eigen.  When we pass the
-  // references to rocBLAS, we essentially reinterpret_cast to __half, which is
-  // safe because Eigen::half inherits from __half.
-  template <typename InT, typename OutT, typename CompT>
-  bool DoBlasGemmWithAlgorithmImpl(
-      Stream *stream, blas::Transpose transa, blas::Transpose transb, uint64 m,
-      uint64 n, uint64 k, const CompT &alpha, const DeviceMemory<InT> &a,
-      int lda, const DeviceMemory<InT> &b, int ldb, const CompT &beta,
-      DeviceMemory<OutT> *c, int ldc, blas::ComputationType computation_type,
-      blas::AlgorithmType algorithm,
-      blas::ProfileResult *output_profile_result);
-
   // Helper function for implementing DoBlasGemmWithProfiling.
   template <typename T, typename ParamType>
   bool DoBlasGemmWithProfilingImpl(
@@ -188,7 +194,7 @@ class ROCMBlas : public blas::BlasSupport {
   GpuExecutor *parent_;
 
   // rocBLAS library handle on the device.
-  rocblas_handle blas_ GUARDED_BY(mu_);
+  rocblas_handle blas_ TF_GUARDED_BY(mu_);
 
   SE_DISALLOW_COPY_AND_ASSIGN(ROCMBlas);
 };

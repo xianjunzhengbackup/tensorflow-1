@@ -14,10 +14,6 @@
 # ==============================================================================
 """Tests for keras.layers.preprocessing.reduction."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from absl.testing import parameterized
 import numpy as np
 
@@ -108,6 +104,22 @@ class ReductionTest(keras_parameterized.TestCase):
     output = model.predict([data, weights])
     self.assertAllClose(expected_output, output)
 
+  def test_weighted_ragged_reduction_with_different_dimensionality(self):
+    data = ragged_factory_ops.constant([[[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]],
+                                        [[3.0, 1.0], [1.0, 2.0]]])
+    input_tensor = keras.Input(shape=(None, None), ragged=True)
+
+    weights = ragged_factory_ops.constant([[1.0, 2.0, 1.0], [1.0, 1.0]])
+    weight_input_tensor = keras.Input(shape=(None,), ragged=True)
+
+    output_tensor = reduction.Reduction(reduction="mean")(
+        input_tensor, weights=weight_input_tensor)
+    model = keras.Model([input_tensor, weight_input_tensor], output_tensor)
+
+    output = model.predict([data, weights])
+    expected_output = [[2.0, 2.0], [2.0, 1.5]]
+    self.assertAllClose(expected_output, output)
+
   @parameterized.named_parameters(
       {
           "testcase_name": "max",
@@ -183,6 +195,22 @@ class ReductionTest(keras_parameterized.TestCase):
 
     output = model.predict([data, weights])
 
+    self.assertAllClose(expected_output, output)
+
+  def test_weighted_dense_reduction_with_different_dimensionality(self):
+    data = np.array([[[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]],
+                     [[3.0, 1.0], [1.0, 2.0], [0.0, 0.0]]])
+    input_tensor = keras.Input(shape=(None, None))
+
+    weights = np.array([[1.0, 2.0, 1.0], [1.0, 1.0, 0.0]])
+    weight_input_tensor = keras.Input(shape=(None,))
+
+    output_tensor = reduction.Reduction(reduction="mean")(
+        input_tensor, weights=weight_input_tensor)
+    model = keras.Model([input_tensor, weight_input_tensor], output_tensor)
+
+    output = model.predict([data, weights])
+    expected_output = [[2.0, 2.0], [2.0, 1.5]]
     self.assertAllClose(expected_output, output)
 
   def test_sqrtn_fails_on_unweighted_ragged(self):

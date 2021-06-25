@@ -14,9 +14,13 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/kernels/data/concatenate_dataset_op.h"
 
+#include <string>
+#include <utility>
+
+#include "tensorflow/core/data/name_utils.h"
+#include "tensorflow/core/data/split_utils.h"
 #include "tensorflow/core/framework/partial_tensor_shape.h"
 #include "tensorflow/core/framework/tensor.h"
-#include "tensorflow/core/kernels/data/name_utils.h"
 
 namespace tensorflow {
 namespace data {
@@ -61,6 +65,12 @@ class ConcatenateDatasetOp::Dataset : public DatasetBase {
         this, name_utils::IteratorPrefix(kDatasetType, prefix)});
   }
 
+  Status MakeSplitProviders(std::vector<std::unique_ptr<SplitProvider>>*
+                                split_providers) const override {
+    TF_ASSIGN_OR_RETURN(*split_providers, GetSplitProviders(this));
+    return Status::OK();
+  }
+
   const DataTypeVector& output_dtypes() const override {
     return input_->output_dtypes();
   }
@@ -83,6 +93,12 @@ class ConcatenateDatasetOp::Dataset : public DatasetBase {
       return kUnknownCardinality;
     }
     return n1 + n2;
+  }
+
+  Status InputDatasets(std::vector<const DatasetBase*>* inputs) const override {
+    inputs->push_back(input_);
+    inputs->push_back(to_concatenate_);
+    return Status::OK();
   }
 
   Status CheckExternalState() const override {
@@ -111,8 +127,11 @@ class ConcatenateDatasetOp::Dataset : public DatasetBase {
         : DatasetIterator<Dataset>(params), i_(0) {}
 
     Status Initialize(IteratorContext* ctx) override {
-      return dataset()->input_->MakeIterator(
-          ctx, strings::StrCat(prefix(), "[0]"), &input_impl_);
+      TF_ASSIGN_OR_RETURN(input_contexts_,
+                          CreateInputIteratorContexts(ctx, dataset()));
+      return dataset()->input_->MakeIterator(&input_contexts_[0], this,
+                                             strings::StrCat(prefix(), "[0]"),
+                                             &input_impl_);
     }
 
     Status GetNextInternal(IteratorContext* ctx,
@@ -124,14 +143,15 @@ class ConcatenateDatasetOp::Dataset : public DatasetBase {
         return Status::OK();
       }
       while (i_ < 2) {
-        TF_RETURN_IF_ERROR(
-            input_impl_->GetNext(ctx, out_tensors, end_of_sequence));
+        TF_RETURN_IF_ERROR(input_impl_->GetNext(&input_contexts_[i_],
+                                                out_tensors, end_of_sequence));
         if (!*end_of_sequence) {
           return Status::OK();
         }
         if (++i_ < 2) {
           TF_RETURN_IF_ERROR(dataset()->to_concatenate_->MakeIterator(
-              ctx, strings::StrCat(prefix(), "[1]"), &input_impl_));
+              &input_contexts_[i_], this, strings::StrCat(prefix(), "[1]"),
+              &input_impl_));
         }
       }
       *end_of_sequence = true;
@@ -146,11 +166,12 @@ class ConcatenateDatasetOp::Dataset : public DatasetBase {
                                        /*ratio=*/1);
     }
 
-    Status SaveInternal(IteratorStateWriter* writer) override {
+    Status SaveInternal(SerializationContext* ctx,
+                        IteratorStateWriter* writer) override {
       mutex_lock l(mu_);
       TF_RETURN_IF_ERROR(writer->WriteScalar(full_name(kIndex), i_));
       if (input_impl_) {
-        TF_RETURN_IF_ERROR(SaveInput(writer, input_impl_));
+        TF_RETURN_IF_ERROR(SaveInput(ctx, writer, input_impl_));
       } else {
         TF_RETURN_IF_ERROR(
             writer->WriteScalar(full_name(kInputImplUninitialized), ""));
@@ -170,7 +191,7 @@ class ConcatenateDatasetOp::Dataset : public DatasetBase {
         return errors::InvalidArgument("i_ must be in range [0, 2].");
       if (i_ == 1) {
         TF_RETURN_IF_ERROR(dataset()->to_concatenate_->MakeIterator(
-            ctx, strings::StrCat(prefix(), "[1]"), &input_impl_));
+            ctx, this, strings::StrCat(prefix(), "[1]"), &input_impl_));
       } else if (i_ == 2) {
         input_impl_.reset();
       }
@@ -182,8 +203,9 @@ class ConcatenateDatasetOp::Dataset : public DatasetBase {
 
    private:
     mutex mu_;
-    int64 i_ GUARDED_BY(mu_);
-    std::unique_ptr<IteratorBase> input_impl_ GUARDED_BY(mu_);
+    int64 i_ TF_GUARDED_BY(mu_);
+    std::unique_ptr<IteratorBase> input_impl_ TF_GUARDED_BY(mu_);
+    std::vector<IteratorContext> input_contexts_;
   };
 
   static PartialTensorShape MostSpecificCompatibleShape(

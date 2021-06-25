@@ -11,11 +11,10 @@ load(
 
 package(
     default_visibility = ["//visibility:public"],
-    licenses = ["notice"],  # Apache 2.0
+    licenses = ["notice"],
 )
 
 exports_files([
-    "LICENSE",
     "jni/version_script.lds",
 ])
 
@@ -34,7 +33,7 @@ cc_library(
     copts = tf_copts(),
     visibility = ["//visibility:public"],
     deps = [
-        "//tensorflow/core:android_tensorflow_lib_lite",
+        "//tensorflow/core:portable_tensorflow_lib_lite",
         "//tensorflow/java/src/main/native",
     ],
     alwayslink = 1,
@@ -83,7 +82,12 @@ cc_binary(
     ],
     deps = [
         ":android_tensorflow_inference_jni",
-        "//tensorflow/core:android_tensorflow_lib",
+        "//tensorflow/core:portable_tensorflow_lib",
         LINKER_SCRIPT,
     ],
+)
+
+cc_library(
+    name = "android_tensorflow_inference_native",
+    srcs = if_android([":libtensorflow_inference.so"]),
 )

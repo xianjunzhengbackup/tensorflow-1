@@ -47,8 +47,8 @@ class ConditionalAccumulatorOp : public ConditionalAccumulatorBaseOp {
   }
 
   void SetHandleToOutput(OpKernelContext* ctx)
-      SHARED_LOCKS_REQUIRED(mu_) override {
-    ctx->set_output_ref(0, &mu_, accumulator_handle_.AccessTensor(ctx));
+      TF_SHARED_LOCKS_REQUIRED(mu_) override {
+    ctx->set_output_ref(0, &mu_, &accumulator_);
   }
 
   TF_DISALLOW_COPY_AND_ASSIGN(ConditionalAccumulatorOp);
@@ -84,13 +84,13 @@ class ResourceConditionalAccumulatorOp : public ConditionalAccumulatorBaseOp {
   }
 
   void SetHandleToOutput(OpKernelContext* ctx)
-      SHARED_LOCKS_REQUIRED(mu_) override {
-    auto h = accumulator_handle_.AccessTensor(ctx)->template flat<tstring>();
+      TF_SHARED_LOCKS_REQUIRED(mu_) override {
+    auto h = accumulator_.template flat<tstring>();
     h(0) = cinfo_.container();
     h(1) = cinfo_.name();
     OP_REQUIRES_OK(ctx, MakeResourceHandleToOutput(
                             ctx, 0, cinfo_.container(), cinfo_.name(),
-                            MakeTypeIndex<ConditionalAccumulatorBase>()));
+                            TypeIndex::Make<ConditionalAccumulatorBase>()));
   }
 
   TF_DISALLOW_COPY_AND_ASSIGN(ResourceConditionalAccumulatorOp);

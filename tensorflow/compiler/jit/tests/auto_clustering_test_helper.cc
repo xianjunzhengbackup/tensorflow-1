@@ -20,7 +20,7 @@ limitations under the License.
 #include "tensorflow/compiler/jit/xla_cluster_util.h"
 #include "tensorflow/compiler/xla/status_macros.h"
 #include "tensorflow/compiler/xla/statusor.h"
-#include "tensorflow/core/graph/graph_constructor.h"
+#include "tensorflow/core/common_runtime/graph_constructor.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/lib/io/random_inputstream.h"
 #include "tensorflow/core/lib/io/zlib_compression_options.h"
@@ -33,8 +33,7 @@ limitations under the License.
 
 namespace tensorflow {
 namespace {
-xla::StatusOr<string> SummarizeClustering(
-    const GraphDef& auto_clustered_graph_def) {
+StatusOr<string> SummarizeClustering(const GraphDef& auto_clustered_graph_def) {
   testing::ResetClusterSequenceNumber();
   Graph graph(OpRegistry::Global());
   GraphConstructorOptions graph_opts;
@@ -214,10 +213,10 @@ Status BenchmarkMarkForCompilation(absl::string_view graph_def_path,
   TF_RETURN_IF_ERROR(runner.AddGpus(8));
 
   for (auto _ : state) {
-    StopBenchmarkTiming();
+    state.PauseTiming();
     GraphDef result;
     GraphDef graph_def_copy = graph_def;
-    StartBenchmarkTiming();
+    state.ResumeTiming();
     TF_RETURN_IF_ERROR(runner.Run("MarkForCompilationPass",
                                   std::move(graph_def_copy), &result));
   }

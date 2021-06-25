@@ -36,6 +36,7 @@ from tensorflow.python.autograph.pyct import qual_names
 from tensorflow.python.autograph.pyct import transformer
 from tensorflow.python.autograph.pyct.static_analysis import activity
 from tensorflow.python.autograph.pyct.static_analysis import liveness
+from tensorflow.python.autograph.pyct.static_analysis import reaching_fndefs
 from tensorflow.python.framework import op_def_registry
 from tensorflow.python.framework import ops
 
@@ -63,10 +64,33 @@ limitations under the License.
 _INCLUDES = """
 #include "tensorflow/python/eager/pywrap_gradient_exclusions.h"
 
+#include "absl/types/optional.h"
 #include "tensorflow/core/lib/gtl/flatmap.h"
 #include "tensorflow/core/lib/gtl/flatset.h"
 
 using tensorflow::string;
+
+namespace {
+// Keep static data in a format that's easy to init statically.
+struct OpIndexInfo {
+  const char *op_name;
+  int num_indices;
+  std::array<int, 4> unused_indices;
+};
+
+// Helper function to initialize FlatMap<string,FlatSet> from OpIndexInfo.
+template <typename T>
+auto OpGradientInfoInit(const T &a) {
+  auto *m = new tensorflow::gtl::FlatMap<string, tensorflow::gtl::FlatSet<int>>;
+  for (const auto &item : a) {
+    m->emplace(string(item.op_name),
+               tensorflow::gtl::FlatSet<int>(
+                   item.unused_indices.begin(),
+                   item.unused_indices.begin() + item.num_indices));
+  }
+  return m;
+}
+}  // namespace
 """
 
 _EXCLUDED_OPS = [
@@ -103,21 +127,20 @@ class _SubscriptUseTracker(transformer.Base):
 
   def visit_Subscript(self, node):
     """Visits nodes with subscript in the AST."""
+    s = node.slice
     if anno.hasanno(node, anno.Basic.QN):
       qn = anno.getanno(node, anno.Basic.QN)
       if isinstance(node.ctx, gast.Load):
         self.reads.add(qn)
-    elif not isinstance(node.slice, gast.Index):
-      if anno.hasanno(node, anno.Basic.QN):
-        self.complex_reads.add(anno.getanno(node, anno.Basic.QN))
-      elif anno.hasanno(node.value, anno.Basic.QN):
+    elif isinstance(s, (gast.Tuple, gast.Slice)):
+      if anno.hasanno(node.value, anno.Basic.QN):
         self.complex_reads.add(anno.getanno(node.value, anno.Basic.QN))
     value_qn = anno.getanno(node.value, anno.Basic.QN, None)
     if value_qn in self.exclude:
       node.value = self.generic_visit(node.value)
     else:
       node.value = self.visit(node.value)
-    node.slice = self.visit(node.slice)
+    node.slice = self.visit(s)
     return node
 
 
@@ -175,15 +198,17 @@ def _live_tensors(f, attr_name="inputs"):
   """
   node, _ = parser.parse_entity(f, ())
   entity_info = transformer.EntityInfo(
+      name=f.__name__,
       source_code=None,
       source_file=None,
       future_features=(),
       namespace=sys.modules[f.__module__].__dict__)
-  ctx = transformer.Context(entity_info)
+  ctx = transformer.Context(entity_info, None, None)
 
   graphs = cfg.build(node)
   node = qual_names.resolve(node)
   node = activity.resolve(node, ctx, None)
+  node = reaching_fndefs.resolve(node, ctx, graphs)
   node = liveness.resolve(node, ctx, graphs)
 
   op_arg_name = anno.getanno(node.args.args[0], anno.Basic.QN)
@@ -227,7 +252,8 @@ def _live_tensors(f, attr_name="inputs"):
       # Not a number, assuming it can be anything.
       return _ALL
     subscript_val, = subscript.qn
-    if not isinstance(subscript_val, qual_names.NumberLiteral):
+    if (not isinstance(subscript_val, qual_names.Literal) and
+        not isinstance(subscript_val.value, int)):
       # Not a number, assuming it can be anything.
       return _ALL
     input_output_indices.add(subscript_val.value)
@@ -281,7 +307,6 @@ def get_entries(attr_name):
   """
   assert attr_name in ["inputs", "outputs"]
   entries = {}
-  spaces = "          "
   for op_type in ops._gradient_registry.list():  # pylint: disable=protected-access
     if op_type in _EXCLUDED_OPS:
       continue
@@ -291,72 +316,57 @@ def get_entries(attr_name):
     if gradient_fn is None:
       # NotDifferentiable
       if num_values != -1:
-        entries[op_type] = spaces + "{\"%s\", {true, {}}}," % op_type
+        entries[op_type] = "{\"%s\"}," % op_type
       continue
     used_tensors = _live_tensors(gradient_fn, attr_name=attr_name)
     if used_tensors is _ALL:
       continue
     elif not used_tensors:
-      entries[op_type] = spaces + "{\"%s\", {true, {}}}," % op_type
+      entries[op_type] = "{\"%s\"}," % op_type
     else:
       all_tensors = set(range(num_values))
       unused_tensors = all_tensors - used_tensors
       if unused_tensors:
-        entries[op_type] = spaces + "{\"%s\", {false, {%s}}}," % (
-            op_type, ", ".join(str(i) for i in sorted(list(unused_tensors))))
+        unused_tensor_list = sorted(list(unused_tensors))
+        entries[op_type] = "{\"%s\", %d, {%s}}," % (
+            op_type, len(unused_tensor_list), ", ".join(
+                str(i) for i in unused_tensor_list))
   return entries
+
+
+def get_function(name, entries):
+  """Generates lookup function with given name and lookup table entries."""
+  contents = """
+absl::optional<tensorflow::gtl::FlatSet<int>> {name}(
+    const tensorflow::string &op_name) {{
+  static std::array<OpIndexInfo, {count}> a = {{{{
+""".format(
+    name=name, count=len(entries) + 1)
+  contents += "      "
+  contents += "\n      ".join(entries[op_type] for op_type in sorted(entries))
+  contents += "\n      {\"VarHandleOp\"},"
+  contents += """
+  }};
+  static const auto &m = *OpGradientInfoInit(a);
+
+  auto it = m.find(op_name);
+  if (it != m.end()) {
+    return it->second;
+  }
+  return absl::nullopt;
+}
+"""
+  return contents
 
 
 def get_contents():
   """Returns contents for the generated file."""
   contents = ""
   contents += _GENERATED_FILE_HEADER + _INCLUDES
-  contents += """
-bool OpGradientDoesntRequireInputIndices(
-    const string& op_name,
-    std::pair<bool, tensorflow::gtl::FlatSet<int>>** output) {
-  static tensorflow::gtl::FlatMap<
-      string, std::pair<bool, tensorflow::gtl::FlatSet<int>>>* m =
-      new tensorflow::gtl::FlatMap<
-          string, std::pair<bool, tensorflow::gtl::FlatSet<int>>>({
-"""
-
-  entries = get_entries("inputs")
-  contents += "\n".join(entries[op_type] for op_type in sorted(entries))
-  contents += "\n          {\"VarHandleOp\", {true, {}}},\n"
-  contents += """      });
-
-  auto it = m->find(op_name);
-
-  if (it == m->end()) return false;
-
-  *output = &it->second;
-  return true;
-}
-"""
-  contents += """
-bool OpGradientDoesntRequireOutputIndices(
-    const string& op_name,
-    std::pair<bool, tensorflow::gtl::FlatSet<int>>** output) {
-  static tensorflow::gtl::FlatMap<
-      string, std::pair<bool, tensorflow::gtl::FlatSet<int>>>* m =
-      new tensorflow::gtl::FlatMap<
-          string, std::pair<bool, tensorflow::gtl::FlatSet<int>>>({
-"""
-
-  entries = get_entries("outputs")
-  contents += "\n".join(entries[op_type] for op_type in sorted(entries))
-  contents += "\n          {\"VarHandleOp\", {true, {}}},\n"
-  contents += """      });
-
-  auto it = m->find(op_name);
-
-  if (it == m->end()) return false;
-
-  *output = &it->second;
-  return true;
-}
-"""
+  contents += get_function("OpGradientUnusedInputIndices",
+                           get_entries("inputs"))
+  contents += get_function("OpGradientUnusedOutputIndices",
+                           get_entries("outputs"))
   return contents
 
 

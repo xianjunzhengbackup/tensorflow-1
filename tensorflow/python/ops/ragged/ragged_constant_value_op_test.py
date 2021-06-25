@@ -74,6 +74,11 @@ class RaggedConstantValueOpTest(test_util.TensorFlowTestCase,
           ragged_rank=1,
           expected_shape=(3, None, 2)),
       dict(
+          pylist=[[np.array([3, np.array(4)]), [1, 2]],
+                  np.array([]), [[5, 6], [7, 8], [9, 0]]],
+          ragged_rank=1,
+          expected_shape=(3, None, 2)),
+      dict(
           pylist=[[[1, 2], np.array([3, np.array(4)])],
                   np.array([]), [[5, 6], [7, 8], [9, 0]]],
           inner_shape=(2,),
@@ -306,7 +311,7 @@ class RaggedConstantValueOpTest(test_util.TensorFlowTestCase,
                             exception=None,
                             message=None):
     """Tests that `constant_value()` raises an expected exception."""
-    self.assertRaisesRegexp(
+    self.assertRaisesRegex(
         exception,
         message,
         ragged_factory_ops.constant_value,

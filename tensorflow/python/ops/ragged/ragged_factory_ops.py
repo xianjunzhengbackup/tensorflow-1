@@ -27,6 +27,7 @@ from tensorflow.python.framework import tensor_shape
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops.ragged import ragged_tensor
 from tensorflow.python.ops.ragged import ragged_tensor_value
+from tensorflow.python.util import dispatch
 from tensorflow.python.util.tf_export import tf_export
 
 
@@ -34,6 +35,7 @@ from tensorflow.python.util.tf_export import tf_export
 # Op to construct a constant RaggedTensor from a nested Python list.
 #===============================================================================
 @tf_export("ragged.constant")
+@dispatch.add_dispatch_support
 def constant(pylist, dtype=None, ragged_rank=None, inner_shape=None,
              name=None, row_splits_dtype=dtypes.int64):
   """Constructs a constant RaggedTensor from a nested Python list.
@@ -57,8 +59,8 @@ def constant(pylist, dtype=None, ragged_rank=None, inner_shape=None,
       `pylist`.
     ragged_rank: An integer specifying the ragged rank of the returned
       `RaggedTensor`.  Must be nonnegative and less than `K`. Defaults to
-      `max(0, K - 1)` if `inner_shape` is not specified.  Defaults to `max(0, K
-      - 1 - len(inner_shape))` if `inner_shape` is specified.
+      `max(0, K - 1)` if `inner_shape` is not specified.  Defaults to
+      `max(0, K - 1 - len(inner_shape))` if `inner_shape` is specified.
     inner_shape: A tuple of integers specifying the shape for individual inner
       values in the returned `RaggedTensor`.  Defaults to `()` if `ragged_rank`
       is not specified.  If `ragged_rank` is specified, then a default is chosen
@@ -86,6 +88,7 @@ def constant(pylist, dtype=None, ragged_rank=None, inner_shape=None,
 
 
 @tf_export(v1=["ragged.constant_value"])
+@dispatch.add_dispatch_support
 def constant_value(pylist, dtype=None, ragged_rank=None, inner_shape=None,
                    row_splits_dtype="int64"):
   """Constructs a RaggedTensorValue from a nested Python list.
@@ -278,7 +281,10 @@ def _default_inner_shape_for_pylist(pylist, ragged_rank):
     """Returns the inner shape for a python list `item`."""
     if not isinstance(item, (list, tuple)) and np.ndim(item) == 0:
       return ()
-    elif item:
+    # Note that we need this check here in case `item` is not a Python list but
+    # fakes as being one (pylist). For a scenario of this, see test added in
+    # https://github.com/tensorflow/tensorflow/pull/48945
+    elif len(item) > 0:  # pylint: disable=g-explicit-length-test
       return (len(item),) + get_inner_shape(item[0])
     return (0,)
 
@@ -311,6 +317,7 @@ def _default_inner_shape_for_pylist(pylist, ragged_rank):
 
 
 @tf_export(v1=["ragged.placeholder"])
+@dispatch.add_dispatch_support
 def placeholder(dtype, ragged_rank, value_shape=None, name=None):
   """Creates a placeholder for a `tf.RaggedTensor` that will always be fed.
 
@@ -342,5 +349,6 @@ def placeholder(dtype, ragged_rank, value_shape=None, name=None):
     for i in reversed(range(ragged_rank)):
       row_splits = array_ops.placeholder(dtypes.int64, [None],
                                          "row_splits_%d" % i)
-      result = ragged_tensor.RaggedTensor(result, row_splits, internal=True)
+      result = ragged_tensor.RaggedTensor.from_row_splits(result, row_splits,
+                                                          validate=False)
     return result

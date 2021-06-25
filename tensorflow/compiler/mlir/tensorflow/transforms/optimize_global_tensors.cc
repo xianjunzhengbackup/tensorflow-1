@@ -15,23 +15,34 @@ limitations under the License.
 
 // This pass optimizes tf_saved_model.global_tensor ops.
 
+#include <cstddef>
 #include <map>
 #include <set>
 
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/STLExtras.h"
-#include "mlir/IR/Builders.h"  // TF:llvm-project
-#include "mlir/IR/Module.h"  // TF:llvm-project
-#include "mlir/Pass/Pass.h"  // TF:llvm-project
+#include "mlir/Dialect/StandardOps/IR/Ops.h"  // from @llvm-project
+#include "mlir/IR/Builders.h"  // from @llvm-project
+#include "mlir/IR/BuiltinOps.h"  // from @llvm-project
+#include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
+#include "mlir/IR/Operation.h"  // from @llvm-project
+#include "mlir/IR/SymbolTable.h"  // from @llvm-project
+#include "mlir/IR/Types.h"  // from @llvm-project
+#include "mlir/Interfaces/CallInterfaces.h"  // from @llvm-project
+#include "mlir/Pass/Pass.h"  // from @llvm-project
+#include "mlir/Support/LLVM.h"  // from @llvm-project
+#include "mlir/Support/LogicalResult.h"  // from @llvm-project
+#include "mlir/Transforms/RegionUtils.h"  // from @llvm-project
+#include "tensorflow/compiler/mlir/tensorflow/analysis/resource_value_typed_analyzer.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_saved_model.h"
+#include "tensorflow/compiler/mlir/tensorflow/ir/tf_types.h"
 
 namespace mlir {
 namespace tf_saved_model {
 namespace {
 struct OptimizeGlobalTensorsPass
-    : public ModulePass<OptimizeGlobalTensorsPass> {
-  void runOnModule() override;
+    : public PassWrapper<OptimizeGlobalTensorsPass, OperationPass<ModuleOp>> {
+  void runOnOperation() override;
 };
 
 // A global tensor is bound to arguments of multiple funcs.
@@ -45,45 +56,30 @@ struct GlobalTensorUse {
 using GlobalTensorUsesMap =
     std::map<GlobalTensorOp, std::vector<GlobalTensorUse>>;
 
-// TODO(silvasean): Are there other read-only variable ops?
-// It would be nice if we eventually had an interface that we could use
-// to determine if an op is read-only and how to rewrite it.
-// For now, IsReadOnlyVariableOp and RewriteReadOnlyVariableOpToTensorOp need to
-// be keep in sync.
-bool IsReadOnlyVariableOp(Operation* op) { return isa<TF::ReadVariableOp>(op); }
-
-void RewriteReadOnlyVariableOpToTensorOp(Operation* op, Value tensor_value) {
-  auto read_variable = cast<TF::ReadVariableOp>(op);
-  read_variable.value().replaceAllUsesWith(tensor_value);
-}
-
-bool IsFreezable(GlobalTensorOp global_tensor,
-                 ArrayRef<GlobalTensorUse> global_tensor_uses) {
-  // If this tensor is already immutable, don't freeze it.
+bool IsImmutable(GlobalTensorOp global_tensor,
+                 ArrayRef<GlobalTensorUse> global_tensor_uses,
+                 const TF::ResourceAnalyzer& resource_analyzer) {
+  // Global tensor is already known to be immutable.
   if (!global_tensor.is_mutable()) {
     return false;
   }
-  // Can't freeze if exported.
+  // An exported global tensor that is not already known to be immutable might
+  // be externally mutated.
   if (IsExported(global_tensor)) {
     return false;
   }
 
-  // Can't freeze if it is used by anything that we aren't sure is read-only.
-  // Right now, this uses a very simple algorithm that only checks the top-level
-  // func for tf.ReadVariableOp. If the resource is passed into other functions
-  // or control flow, we fail to prove it is freezable even though we could.
+  // A global tensor is immutable if the resource analyzer deems it so.
   for (auto& global_tensor_use : global_tensor_uses) {
     auto arg = global_tensor_use.func.getArgument(global_tensor_use.arg_index);
-    for (auto user : arg.getUsers()) {
-      if (!IsReadOnlyVariableOp(user)) {
-        return false;
-      }
+    if (resource_analyzer.IsPotentiallyWritten(arg)) {
+      return false;
     }
   }
   return true;
 }
 
-static GlobalTensorUsesMap CreateGlobalTensorUsesMap(ModuleOp module) {
+GlobalTensorUsesMap CreateGlobalTensorUsesMap(ModuleOp module) {
   GlobalTensorUsesMap global_tensor_uses;
 
   SymbolTable symbol_table(module);
@@ -96,6 +92,9 @@ static GlobalTensorUsesMap CreateGlobalTensorUsesMap(ModuleOp module) {
       }
       auto global_tensor = symbol_table.lookup<GlobalTensorOp>(
           sym.cast<FlatSymbolRefAttr>().getValue());
+      if (!global_tensor) {
+        continue;
+      }
       global_tensor_uses[global_tensor].push_back({func, i});
     }
   }
@@ -103,46 +102,17 @@ static GlobalTensorUsesMap CreateGlobalTensorUsesMap(ModuleOp module) {
   return global_tensor_uses;
 }
 
-void FreezeGlobalTensors(ModuleOp module,
-                         const GlobalTensorUsesMap& global_tensor_uses_map) {
-  SmallVector<GlobalTensorOp, 4> freezable_global_tensors;
-  for (auto& kv : global_tensor_uses_map) {
-    auto global_tensor = kv.first;
-    const auto& global_tensor_uses = kv.second;
-    if (IsFreezable(global_tensor, global_tensor_uses)) {
-      freezable_global_tensors.push_back(global_tensor);
-    }
-  }
-
-  // Remove `is_mutable` attribute from tf_saved_model.global_tensor
-  // and update func arguments to match.
-  //
-  // This amounts to changing the type of the argument to a tensor type, and
-  // replacing all the tf.ReadVariableOp's with the new tensor argument value.
-  OpBuilder builder(module.getBodyRegion());
+// Removes `is_mutable` attribute from tf_saved_model.global_tensor ops where we
+// can prove it is safe to do so.
+void MarkGlobalTensorsImmutable(
+    ModuleOp module, const GlobalTensorUsesMap& global_tensor_uses_map,
+    const TF::ResourceAnalyzer& resource_analyzer) {
   for (const auto& kv : global_tensor_uses_map) {
     auto global_tensor = kv.first;
     const auto& global_tensor_uses = kv.second;
-    if (!IsFreezable(global_tensor, global_tensor_uses)) {
-      continue;
+    if (IsImmutable(global_tensor, global_tensor_uses, resource_analyzer)) {
+      global_tensor->removeAttr("is_mutable");
     }
-    for (auto global_tensor_use : global_tensor_uses) {
-      auto func = global_tensor_use.func;
-      auto arg_index = global_tensor_use.arg_index;
-      Value arg = func.getArgument(arg_index);
-      for (Operation* user : llvm::make_early_inc_range(arg.getUsers())) {
-        RewriteReadOnlyVariableOpToTensorOp(user, arg);
-        user->erase();
-      }
-      Type new_type = global_tensor.value().Attribute::getType();
-      arg.setType(new_type);
-      auto old_ftype = func.getType();
-      auto input_types = old_ftype.getInputs().vec();
-      input_types[arg_index] = new_type;
-      func.setType(
-          builder.getFunctionType(input_types, old_ftype.getResults()));
-    }
-    global_tensor.removeAttr("is_mutable");
   }
 }
 
@@ -176,29 +146,31 @@ void EraseUnusedBoundInputs(ModuleOp module) {
   }
 }
 
-void OptimizeGlobalTensorsPass::runOnModule() {
-  // This analysis could be much more elaborate, including tracking global
-  // tensors interprocedurally and uses in a wide variety of ops. But I don't
-  // know if we need that complexity.
-  auto module = getModule();
+void OptimizeGlobalTensorsPass::runOnOperation() {
+  auto module = getOperation();
+  if (!tf_saved_model::HasTfSavedModelSemantics(module)) {
+    return;
+  }
 
   EraseUnusedBoundInputs(module);
 
-  // Figure out which func's use each tf_saved_model.global_tensor.
+  TF::ResourceAnalyzer resource_analyzer(module);
+
   GlobalTensorUsesMap global_tensor_uses = CreateGlobalTensorUsesMap(module);
 
-  FreezeGlobalTensors(module, global_tensor_uses);
+  MarkGlobalTensorsImmutable(module, global_tensor_uses, resource_analyzer);
+
   EraseUnusedGlobalTensors(module, global_tensor_uses);
 }
 
-}  // namespace
-
 // For "opt" to pick up this pass.
-static PassRegistration<OptimizeGlobalTensorsPass> pass(
+PassRegistration<OptimizeGlobalTensorsPass> pass(
     "tf-saved-model-optimize-global-tensors",
     "Optimize tf_saved_model.global_tensor's.");
 
-std::unique_ptr<OpPassBase<ModuleOp>> CreateOptimizeGlobalTensorsPass() {
+}  // namespace
+
+std::unique_ptr<OperationPass<ModuleOp>> CreateOptimizeGlobalTensorsPass() {
   return std::make_unique<OptimizeGlobalTensorsPass>();
 }
 

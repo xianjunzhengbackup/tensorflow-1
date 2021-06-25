@@ -15,9 +15,9 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_KERNELS_DATA_PARALLEL_INTERLEAVE_DATASET_OP_H_
 #define TENSORFLOW_CORE_KERNELS_DATA_PARALLEL_INTERLEAVE_DATASET_OP_H_
 
+#include "tensorflow/core/data/captured_function.h"
+#include "tensorflow/core/data/dataset_utils.h"
 #include "tensorflow/core/framework/dataset.h"
-#include "tensorflow/core/kernels/data/captured_function.h"
-#include "tensorflow/core/kernels/data/dataset_utils.h"
 
 namespace tensorflow {
 namespace data {
@@ -29,6 +29,10 @@ class ParallelInterleaveDatasetOp : public UnaryDatasetOpKernel {
   static constexpr const char* const kOtherArguments = "other_arguments";
   static constexpr const char* const kCycleLength = "cycle_length";
   static constexpr const char* const kBlockLength = "block_length";
+  static constexpr const char* const kBufferOutputElements =
+      "buffer_output_elements";
+  static constexpr const char* const kPrefetchInputElements =
+      "prefetch_input_elements";
   static constexpr const char* const kNumParallelCalls = "num_parallel_calls";
   static constexpr const char* const kFunc = "f";
   static constexpr const char* const kTarguments = "Targuments";

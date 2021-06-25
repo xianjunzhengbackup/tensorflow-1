@@ -50,9 +50,9 @@ int64 PeakMemoryUseOfEntryComputation(
 
   HloComputation* computation = module->entry_computation();
   const HloInstructionSequence& sequence = schedule.sequence(computation);
-  return HeapSimulator::Run(absl::make_unique<NoFragmentationStatsHeap>(),
-                            *computation, sequence, *alias_analysis,
-                            size_function)
+  return HeapSimulator::Run(
+             absl::make_unique<NoFragmentationStatsHeap<HloValue>>(),
+             *computation, sequence, *alias_analysis, size_function)
       .ValueOrDie()
       .heap_size;
 }
@@ -209,9 +209,8 @@ ENTRY entry {
     instructions_by_name[instruction->name()] = instruction;
   }
 
-  SequentialHloOrdering ordering(schedule);
-  EXPECT_TRUE(ordering.ExecutesBefore(instructions_by_name.at("send-done"),
-                                      instructions_by_name.at("n1")));
+  EXPECT_LT(absl::c_find(sequence, instructions_by_name.at("send-done")),
+            absl::c_find(sequence, instructions_by_name.at("n1")));
 }
 
 TEST_F(HloSchedulingTest, TuplesAreAccountedCorrectly) {

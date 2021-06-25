@@ -170,6 +170,7 @@ std::set<string> GetOpsFormatAgnostic() {
                                           "Polygamma",
                                           "QuantizeAndDequantizeV2",
                                           "QuantizeAndDequantizeV3",
+                                          "QuantizeAndDequantizeV4",
                                           "Pow",
                                           "Real",
                                           "RealDiv",
@@ -181,6 +182,7 @@ std::set<string> GetOpsFormatAgnostic() {
                                           "ReluGrad",
                                           "Rint",
                                           "Select",
+                                          "SelectV2",
                                           "Selu",
                                           "SeluGrad",
                                           "Shape",
@@ -735,7 +737,7 @@ class NodeProcessor : public GraphProcessor {
     if (IsConstant(*param_node)) {
       TF_RETURN_IF_ERROR(UpdateAttrValueOfInput(param_index, permute));
     } else {
-      AddDataFormatTranformToParamInput(op, param_index, dtype);
+      AddDataFormatTransformToParamInput(op, param_index, dtype);
     }
     return Status::OK();
   }
@@ -1038,8 +1040,8 @@ class NodeProcessor : public GraphProcessor {
     return added_node;
   }
 
-  void AddDataFormatTranformToParamInput(const string& op, int input_pos,
-                                         DataType dtype) {
+  void AddDataFormatTransformToParamInput(const string& op, int input_pos,
+                                          DataType dtype) {
     string suffix = (op == "DataFormatVecPermute") ? kVecPermuteNHWCToNCHW
                                                    : kDimMapNHWCToNCHW;
     string name = LayoutOptimizerNode(
@@ -1100,7 +1102,8 @@ class Conv2DProcessor : public NodeProcessor {
  protected:
   bool ShouldProcess() const override {
     return !MustPreserve() && IsNHWC() && IsPortZeroDimsFour(*node_) &&
-           HasOutputs() && (!IsGemmUsed() || no_gemm_) && IsOnGPU();
+           HasOutputs() && (!IsGemmUsed() || no_gemm_) && IsOnGPU() &&
+           IsDataTypeFloat();
   }
 
   TensorShapeProto GetShape(const string& input_name) const {
@@ -1127,6 +1130,13 @@ class Conv2DProcessor : public NodeProcessor {
     if (node_->attr().find("padding") != node_->attr().end()) {
       auto padding = node_->attr().at("padding").s();
       return padding == "VALID";
+    }
+    return false;
+  }
+
+  bool IsDataTypeFloat() const {
+    if (node_->attr().find("T") != node_->attr().end()) {
+      return kDataTypeIsFloating.Contains(node_->attr().at("T").type());
     }
     return false;
   }
@@ -2271,11 +2281,6 @@ Status LayoutOptimizer::Optimize(Cluster* cluster, const GrapplerItem& item,
     *output = item.graph;
   }
   return status;
-}
-
-void LayoutOptimizer::Feedback(Cluster* cluster, const GrapplerItem& item,
-                               const GraphDef& optimize_output, double result) {
-  // Nothing to do for LayoutOptimizer.
 }
 
 }  // end namespace grappler
